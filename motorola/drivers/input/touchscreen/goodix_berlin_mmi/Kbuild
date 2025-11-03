@@ -31,6 +31,10 @@ endif
 ifneq ($(filter m y,$(CONFIG_GTP_FOD)),)
     EXTRA_CFLAGS += -DCONFIG_GTP_FOD
     goodix_brl_mmi-objs += goodix_ts_gesture_fod.o
+
+    ifneq ($(filter m y,$(CONFIG_ENABLE_GTP_VIRTUAL_FOD)),)
+        EXTRA_CFLAGS += -DCONFIG_ENABLE_GTP_VIRTUAL_FOD
+    endif
 else
     goodix_brl_mmi-objs += goodix_ts_gesture.o
 endif
@@ -88,6 +92,10 @@ ifneq ($(filter m y,$(CONFIG_ENABLE_GTP_PALM_CANCEL)),)
     EXTRA_CFLAGS += -DCONFIG_ENABLE_GTP_PALM_CANCEL
 endif
 
+ifneq ($(filter m y,$(CONFIG_GTP_ENABLE_TOUCH_PALM_BY_ID)),)
+    EXTRA_CFLAGS += -DCONFIG_ENABLE_GTP_PALM_CANCEL_BY_ID
+endif
+
 ifneq ($(filter m y,$(CONFIG_INPUT_GTP_PASSIVE_PEN_NOTIFIER)),)
 	EXTRA_CFLAGS += -DGTP_PEN_NOTIFIER
 endif
@@ -116,7 +124,9 @@ else ifneq ($(findstring rtwo, $(USE_TARGET_PRODUCT)), )
         EXTRA_CFLAGS += -DPRODUCT_RTWO
 else ifneq ($(findstring ctwo, $(USE_TARGET_PRODUCT)), )
         EXTRA_CFLAGS += -DPRODUCT_CTWO
-else ifneq ($(findstring bronco, $(USE_TARGET_PRODUCT)), )
+else ifneq ($(filter arcfox%, $(USE_TARGET_PRODUCT)), )
+        EXTRA_CFLAGS += -DPRODUCT_ARCFOX
+else ifneq ($(filter bronco, $(USE_TARGET_PRODUCT)), )
         EXTRA_CFLAGS += -DPRODUCT_BRONCO
 else ifneq ($(findstring felix, $(USE_TARGET_PRODUCT)), )
         EXTRA_CFLAGS += -DCONFIG_GTP_DISP_MODE
@@ -126,12 +136,18 @@ else ifneq ($(findstring lynkco, $(USE_TARGET_PRODUCT)), )
         EXTRA_CFLAGS += -DPRODUCT_LYNKCO
 else ifneq ($(findstring bangkk, $(USE_TARGET_PRODUCT)), )
         EXTRA_CFLAGS += -DPRODUCT_BANGKK
-else ifneq ($(findstring eqe, $(USE_TARGET_PRODUCT)), )
+else ifneq ($(filter eqe%, $(USE_TARGET_PRODUCT)), )
         EXTRA_CFLAGS += -DPRODUCT_EQE
 else ifneq ($(findstring boston, $(USE_TARGET_PRODUCT)), )
         EXTRA_CFLAGS += -DPRODUCT_BOSTON
-else ifneq ($(findstring avatrn, $(USE_TARGET_PRODUCT)), )
+else ifneq ($(filter cusco%, $(USE_TARGET_PRODUCT)), )
+        EXTRA_CFLAGS += -DPRODUCT_CUSCO
+else ifneq ($(filter avatrn%, $(USE_TARGET_PRODUCT)), )
         EXTRA_CFLAGS += -DPRODUCT_AVATRN
+else ifneq ($(filter malmo%, $(USE_TARGET_PRODUCT)), )
+        EXTRA_CFLAGS += -DPRODUCT_MALMO
+else ifneq ($(filter tank%, $(USE_TARGET_PRODUCT)), )
+        EXTRA_CFLAGS += -DPRODUCT_TANK
 endif
 
 KBUILD_EXTRA_SYMBOLS += $(CURDIR)/$(KBUILD_EXTMOD)/../touchscreen_mmi/$(GKI_OBJ_MODULE_DIR)/Module.symvers

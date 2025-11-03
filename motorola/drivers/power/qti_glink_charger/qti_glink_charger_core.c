@@ -27,10 +27,13 @@
 #include <linux/delay.h>
 #include <linux/soc/qcom/pmic_glink.h>
 #include <linux/power/bm_adsp_ulog.h>
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
+#include <linux/thermal.h>
 
 #include "mmi_charger.h"
 #include "qti_glink_charger.h"
-
+#include "trusted_shash_lib.h"
 /* PPM specific definitions */
 #define MSG_OWNER_OEM			32782
 #define MSG_TYPE_REQ_RESP		1
@@ -237,7 +240,9 @@ struct qti_charger {
 	struct mmi_charger_driver	*driver;
 	struct power_supply		*wls_psy;
 	struct power_supply		*partner_charger;
+	struct thermal_cooling_device	*cdev;
 	u32				partner_charger_icl;
+	u32				partner_charger_soc;
 	u32				*profile_data;
 	struct charger_profile_info	profile_info;
 	struct lpd_info			lpd_info;
@@ -257,7 +262,31 @@ struct qti_charger {
 	bool				*debug_enabled;
 	u32				wls_curr_max;
 	int				rx_connected;
+	u32				rx_dev_mfg;
+	u32				rx_dev_type;
+	u32				rx_dev_id;
+	u32				weak_charge_disable;
 	u32				switched_nums;
+	bool				mosfet_supported;
+	int				mos_en_gpio;
+	bool				mosfet_is_enable;
+
+	u32 *thermal_primary_levels;
+	u32 thermal_primary_fcc_ua;
+	int curr_thermal_primary_level;
+	int num_thermal_primary_levels;
+	struct thermal_cooling_device *primary_tcd;
+
+	u32 *thermal_secondary_levels;
+	u32 thermal_secondary_fcc_ua;
+	int curr_thermal_secondary_level;
+	int num_thermal_secondary_levels;
+	struct thermal_cooling_device *secondary_tcd;
+
+	u32				random_num[SHA256_NUM];
+	u8 				sha1_digest[SHA1_DIGEST_SIZE];
+	u8 				hmac_digest[SHA256_DIGEST_SIZE];
+
 	struct notifier_block		wls_nb;
 	struct dentry		*debug_root;
 	struct power_supply		*batt_psy;
@@ -641,7 +670,7 @@ void qti_wireless_charge_dump_info(struct qti_charger *chg, struct wls_dump wls_
 
 	mmi_info(chg, "Wireless dump info -2: TX_IIN: %dmA, TX_VIN: %dmV, TX_VRECT: %dmV, "
 		"TX_DET_RX_POWER: %dmW, TX_POWER: %dmW, POWER_LOSS: %dmW, TX_FOD: %d, "
-		"RX_CONNECTED: %d, TX_EPT_RSN: 0x%04x, ",
+		"RX_CONNECTED: %d, RX_DEV_INFO: 0x%x:0x%x:0x%x, TX_EPT_RSN: 0x%04x, ",
 		wls_info.tx_iin_ma,
 		wls_info.tx_vin_mv,
 		wls_info.tx_vrect_mv,
@@ -650,6 +679,9 @@ void qti_wireless_charge_dump_info(struct qti_charger *chg, struct wls_dump wls_
 		wls_info.power_loss,
 		(wls_info.irq_status & (0x01<<12)) ? 1 : 0,
 		chg->rx_connected,
+		chg->rx_dev_mfg,
+		chg->rx_dev_type,
+		chg->rx_dev_id,
 		wls_info.tx_ept);
 
 	mmi_info(chg, "Wireless dump info -3: rx_ept: %d, rx_ce: %d, "
@@ -732,15 +764,65 @@ void qti_msb_dev_info(struct qti_charger *chg, struct msb_dev_info msb_dev)
 #if defined(SWITCHEDCAP_DUMP)
 void qti_switched_dump_info(struct qti_charger *chg, struct switched_dev_info switched_info)
 {
-	mmi_info(chg, "switchedcap dump info [%d]: chg_en %d, work_mode 0x%x, int_stat 0x%x, "
+	mmi_info(chg, "switchedcap dump info [0x%02x-%d]: chg_en %d, work_mode 0x%x, int_stat 0x%x, "
 			"ibat_ma %d, ibus_ma %d, vbus_mv %d, vout_mv %d, vac_mv %d, vbat_mv %d, "
 			"vusb_mv %d, vwpc_mv %d, die_temp %d",
-			switched_info.chg_role, switched_info.chg_en, switched_info.work_mode,
-			switched_info.int_stat, switched_info.ibat_ma, switched_info.ibus_ma,
-			switched_info.vbus_mv, switched_info.vout_mv, switched_info.vac_mv,
-			switched_info.vbat_mv, switched_info.vusb_mv, switched_info.vwpc_mv, switched_info.die_temp);
+			switched_info.chip_id, switched_info.chg_role, switched_info.chg_en, switched_info.work_mode,
+			switched_info.int_stat, switched_info.ibat_ma, switched_info.ibus_ma, switched_info.vbus_mv,
+			switched_info.vout_mv, switched_info.vac_mv, switched_info.vbat_mv, switched_info.vusb_mv,
+			switched_info.vwpc_mv, switched_info.die_temp);
 }
 #endif
+
+#if defined(FUELGUAGE_DUMP)
+void qti_fg_charge_dump_info(struct qti_charger *chg, struct fg_dump fg_info)
+{
+
+	mmi_info(chg, "FG dump info: WORK_MODE: 0x%x, SOC: %d, VOLTAGE_MV: %dmV, CURRENT_MA: %dmA, "
+		"TEMP: %d, CYCLE_COUNT: %d, REMAINING_CAPACITY: %d, FULL_CAPACITY: %d",
+		fg_info.work_mode, fg_info.current_ma, fg_info.voltage_mv, fg_info.soc,
+		fg_info.temperature, fg_info.cycle_count,
+		fg_info.remaining_capacity, fg_info.full_capacity);
+
+}
+#endif
+
+static void qti_encrypt_authentication(struct qti_charger *chg)
+{
+	int i;
+	TRUSTED_SHASH_RESULT trusted_result;
+	struct encrypted_data send_data;
+	u8 random_num[4] = {0};
+
+	memset(&send_data, 0, sizeof(send_data));
+	for (i = 0;i < 4;i++) {
+		get_random_bytes(&(random_num[i]),sizeof(*random_num));
+		trusted_result.random_num[i] = random_num[i] % 26 + 'a';
+		send_data.random_num[i] = trusted_result.random_num[i];
+		mmi_info(chg, "encrypt random_num1[%d]: %d, 0x%x \n", i, send_data.random_num[i], send_data.random_num[i]);
+	}
+
+	trusted_sha1(trusted_result.random_num, 4, trusted_result.sha1);
+	trusted_hmac(trusted_result.random_num, 4, trusted_result.hmac_sha256);
+
+	for (i = 0;i < 4;i++) {
+	    send_data.hmac_data[i] = trusted_result.hmac_sha256[3 + (4 * i)] + (trusted_result.hmac_sha256[2 + (4 * i)] << 8) +
+	            (trusted_result.hmac_sha256[1 + (4 * i)] << 16) + (trusted_result.hmac_sha256[0 + (4 * i)] << 24);
+	    mmi_info(chg, "encrypt hmac_sha256[%d]: 0x%x \n", i, send_data.hmac_data[i]);
+
+	}
+
+	for (i = 0;i < 4;i++) {
+	    send_data.sha1_data[i] = trusted_result.sha1[3 + (4 * i)] + (trusted_result.sha1[2 + (4 * i)] << 8) +
+	            (trusted_result.sha1[1 + (4 * i)] << 16) + (trusted_result.sha1[0 + (4 * i)] << 24);
+	    mmi_info(chg, "encrypt hmac_sha1[%d]: 0x%x \n", i, send_data.sha1_data[i]);
+	}
+
+	qti_charger_write(chg, OEM_PROP_ENCRYT_DATA,
+				&send_data,
+				sizeof(struct encrypted_data));
+
+}
 
 static int qti_charger_get_chg_info(void *data, struct mmi_charger_info *chg_info)
 {
@@ -755,12 +837,22 @@ static int qti_charger_get_chg_info(void *data, struct mmi_charger_info *chg_inf
 	struct switched_dev_info master_switched_info;
 	int i = 0;
 #endif
+#if defined(FUELGUAGE_DUMP)
+	struct fg_dump fg_info;
+#endif
+	int prev_cid = -1;
+	int prev_lpd = 0;
+	static bool lpd_ulog_triggered = false;
+	static bool otg_ulog_triggered = false;
+
 	rc = qti_charger_read(chg, OEM_PROP_CHG_INFO,
 				&info,
 				sizeof(struct charger_info));
 	if (rc)
 		return rc;
 
+	prev_cid = chg->lpd_info.lpd_cid;
+	prev_lpd = chg->lpd_info.lpd_present;
 	chg->lpd_info.lpd_cid = -1;
 	rc = qti_charger_read(chg, OEM_PROP_LPD_INFO,
 				&chg->lpd_info,
@@ -770,16 +862,53 @@ static int qti_charger_get_chg_info(void *data, struct mmi_charger_info *chg_inf
 		memset(&chg->lpd_info, 0, sizeof(struct lpd_info));
 		chg->lpd_info.lpd_cid = -1;
 	}
-	mmi_info(chg, "LPD: present=%d, rsbu1=%d, rsbu2=%d, cid=%d\n",
+
+	if ((prev_cid != -1 && chg->lpd_info.lpd_cid == -1) ||
+            (!prev_lpd && chg->lpd_info.lpd_present)) {
+		if (!lpd_ulog_triggered && !otg_ulog_triggered)
+			bm_ulog_enable_log(true);
+		lpd_ulog_triggered = true;
+		mmi_err(chg, "LPD: present=%d, rsbu1=%d, rsbu2=%d, cid=%d\n",
 			chg->lpd_info.lpd_present,
 			chg->lpd_info.lpd_rsbu1,
 			chg->lpd_info.lpd_rsbu2,
 			chg->lpd_info.lpd_cid);
+	} else if ((chg->lpd_info.lpd_cid != -1 && prev_cid == -1) ||
+		   (!chg->lpd_info.lpd_present && prev_lpd)) {
+		if (lpd_ulog_triggered && !otg_ulog_triggered)
+			bm_ulog_enable_log(false);
+		lpd_ulog_triggered = false;
+		mmi_warn(chg, "LPD: present=%d, rsbu1=%d, rsbu2=%d, cid=%d\n",
+			chg->lpd_info.lpd_present,
+			chg->lpd_info.lpd_rsbu1,
+			chg->lpd_info.lpd_rsbu2,
+			chg->lpd_info.lpd_cid);
+	} else {
+		mmi_info(chg, "LPD: present=%d, rsbu1=%d, rsbu2=%d, cid=%d\n",
+			chg->lpd_info.lpd_present,
+			chg->lpd_info.lpd_rsbu1,
+			chg->lpd_info.lpd_rsbu2,
+			chg->lpd_info.lpd_cid);
+	}
+
+	if (info.chrg_otg_enabled && (info.chrg_uv < VBUS_MIN_MV * 1000)) {
+		if (!otg_ulog_triggered && !lpd_ulog_triggered)
+			bm_ulog_enable_log(true);
+		otg_ulog_triggered = true;
+		mmi_err(chg, "OTG: vbus collapse, vbus=%duV\n", info.chrg_uv);
+	} else if (info.chrg_otg_enabled) {
+		if (otg_ulog_triggered && !lpd_ulog_triggered)
+			bm_ulog_enable_log(false);
+		otg_ulog_triggered = false;
+	}
 
 	chg->chg_info.chrg_mv = info.chrg_uv / 1000;
 	chg->chg_info.chrg_ma = info.chrg_ua / 1000;
 	chg->chg_info.chrg_type = info.chrg_type;
 	chg->chg_info.chrg_pmax_mw = info.chrg_pmax_mw;
+	if (chg->chg_info.chrg_present != info.chrg_present && !info.chrg_present) {
+		qti_encrypt_authentication(chg);
+	}
 	chg->chg_info.chrg_present = info.chrg_present;
 	if (!info.chrg_present && info.chrg_type != 0)
 		chg->chg_info.chrg_present = 1;
@@ -820,12 +949,22 @@ static int qti_charger_get_chg_info(void *data, struct mmi_charger_info *chg_inf
 	}
 #endif
 
+#if defined(FUELGUAGE_DUMP)
+	qti_charger_read(chg, OEM_PROP_FG_DUMP_INFO,
+				&fg_info,
+				sizeof(struct fg_dump));
+	qti_fg_charge_dump_info(chg, fg_info);
+#endif
+
+    mmi_info(chg, "Thermal: primary_limit_level = %d, primary_fcc_ma = %d, secondary_limit_level = %d, thermal_secondary_fcc_ma = %d",
+            chg->curr_thermal_primary_level, chg->thermal_primary_fcc_ua,
+            chg->curr_thermal_secondary_level, chg->thermal_secondary_fcc_ua);
 	bm_ulog_print_log(OEM_BM_ULOG_SIZE);
 
 	return rc;
 }
 
-static int qti_charger_get_partner_icl(struct qti_charger *chg, u32 *icl)
+static int qti_charger_get_partner_prop(struct qti_charger *chg, enum power_supply_property prop, u32 *data)
 {
 	int rc;
 	union power_supply_propval propval;
@@ -836,8 +975,11 @@ static int qti_charger_get_partner_icl(struct qti_charger *chg, u32 *icl)
 					"mmi,partner_psy_name", &partner_psy_name);
 		if (rc) {
 			mmi_err(chg, "Failed get the partner psy name");
+			partner_psy_name = "";
 			return rc;
 		}
+	} else if (!strlen(partner_psy_name)) {
+		return 0;
 	}
 
 	if (!chg->partner_charger) {
@@ -846,12 +988,12 @@ static int qti_charger_get_partner_icl(struct qti_charger *chg, u32 *icl)
 			return -ENODEV;
 	}
 
-	rc = power_supply_get_property(chg->partner_charger, POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT, &propval);
+	rc = power_supply_get_property(chg->partner_charger, prop, &propval);
 	if (rc < 0) {
-		mmi_err(chg, "get property failed, rc=%d\n", rc);
+		mmi_err(chg, "get property %d failed, rc=%d\n", prop, rc);
 		return rc;
 	}
-	*icl = propval.intval;
+	*data = propval.intval;
 	return rc;
 }
 
@@ -936,13 +1078,22 @@ static int qti_charger_config_charge(void *data, struct mmi_charger_cfg *config)
 		chg->chg_cfg.charging_reset = config->charging_reset;
 	}
 
-	rc = qti_charger_get_partner_icl(chg, &value);
+	rc = qti_charger_get_partner_prop(chg, POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT, &value);
 	if (!rc && chg->partner_charger_icl != value) {
 		rc = qti_charger_write(chg, OEM_PROP_CHG_PARTNER_ICL,
 					&value,
 					sizeof(value));
 		if (!rc)
 			chg->partner_charger_icl = value;
+	}
+
+	rc = qti_charger_get_partner_prop(chg, POWER_SUPPLY_PROP_CAPACITY, &value);
+	if (!rc && chg->partner_charger_soc != value) {
+		rc = qti_charger_write(chg, OEM_PROP_CHG_PARTNER_SOC,
+					&value,
+					sizeof(value));
+		if (!rc)
+			chg->partner_charger_soc = value;
 	}
 
 	return 0;
@@ -1550,6 +1701,54 @@ static DEVICE_ATTR(wls_fod_curr, 0664,
 		wls_fod_curr_show,
 		wls_fod_curr_store);
 
+static ssize_t batt_id_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	int battsn_nums = 0, count = 0, i = 0;
+	int rc;
+
+	struct qti_charger *chg = dev_get_drvdata(dev);
+	struct profile_sn_map {
+		const char *id;
+		const char *sn;
+	} *map_table;
+
+	battsn_nums = of_property_count_strings(chg->dev->of_node, "profile-ids-map");
+	if (battsn_nums <= 0 || (battsn_nums % 2)) {
+		mmi_err(chg, "Invalid profile-ids-map in DT, rc=%d\n", battsn_nums);
+		return -EINVAL;
+	}
+
+	map_table = devm_kmalloc_array(chg->dev, battsn_nums / 2,
+					sizeof(struct profile_sn_map),
+					GFP_KERNEL);
+	if (!map_table)
+		return -ENOMEM;
+
+	rc = of_property_read_string_array(chg->dev->of_node, "profile-ids-map",
+					(const char **)map_table,
+					battsn_nums);
+	if (rc < 0) {
+		mmi_err(chg, "Failed to get profile-ids-map, rc=%d\n", rc);
+		goto free_map;
+	}
+
+	count += scnprintf(buf+count, CHG_SHOW_MAX_SIZE, "%d", battsn_nums / 2);
+
+	for (i = 0; i < battsn_nums / 2 && map_table[i].sn; i++) {
+		count += scnprintf(buf+count, CHG_SHOW_MAX_SIZE,
+				"%s", map_table[i].sn);
+	}
+	count += scnprintf(buf+count, CHG_SHOW_MAX_SIZE, "\n");
+
+free_map:
+	devm_kfree(chg->dev, map_table);
+
+	return count;
+}
+
+static DEVICE_ATTR_RO(batt_id);
+
 static ssize_t addr_store(struct device *dev,
 					   struct device_attribute *attr,
 					   const char *buf, size_t count)
@@ -1934,6 +2133,79 @@ static DEVICE_ATTR(rx_connected, S_IRUGO,
 		rx_connected_show,
 		NULL);
 
+static ssize_t rx_dev_manufacturing_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	u32 rx_dev_mfg = 0;
+	struct qti_charger *chg = this_chip;
+
+	if (!chg) {
+		pr_err("QTI: chip not valid\n");
+		return -ENODEV;
+	}
+
+	qti_charger_read(chg, OEM_PROP_WLS_RX_DEV_MFG,
+				&rx_dev_mfg,
+				sizeof(rx_dev_mfg));
+
+	chg->rx_dev_mfg= rx_dev_mfg;
+
+	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%#x\n", chg->rx_dev_mfg);
+}
+static DEVICE_ATTR(rx_dev_manufacturing, S_IRUGO,
+		rx_dev_manufacturing_show,
+		NULL);
+
+static ssize_t rx_dev_type_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	u32 rx_dev_type = 0;
+	struct qti_charger *chg = this_chip;
+
+	if (!chg) {
+		pr_err("QTI: chip not valid\n");
+		return -ENODEV;
+	}
+
+	qti_charger_read(chg, OEM_PROP_WLS_RX_DEV_TYPE,
+				&rx_dev_type,
+				sizeof(rx_dev_type));
+
+	chg->rx_dev_type = rx_dev_type;
+
+	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%#x\n", chg->rx_dev_type);
+}
+static DEVICE_ATTR(rx_dev_type, S_IRUGO,
+		rx_dev_type_show,
+		NULL);
+
+static ssize_t rx_dev_id_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	u32 rx_dev_id = 0;
+	struct qti_charger *chg = this_chip;
+
+	if (!chg) {
+		pr_err("QTI: chip not valid\n");
+		return -ENODEV;
+	}
+
+	qti_charger_read(chg, OEM_PROP_WLS_RX_DEV_ID,
+				&rx_dev_id,
+				sizeof(rx_dev_id));
+
+	chg->rx_dev_id = rx_dev_id;
+
+	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%#x\n", chg->rx_dev_id);
+}
+static DEVICE_ATTR(rx_dev_id, S_IRUGO,
+		rx_dev_id_show,
+		NULL);
+
+
 static ssize_t wlc_st_changed_show(struct device *dev,
 					struct device_attribute *attr,
 					char *buf)
@@ -1994,6 +2266,49 @@ static ssize_t wls_input_current_limit_show(struct device *dev,
 }
 static DEVICE_ATTR(wls_input_current_limit, S_IRUGO|S_IWUSR, wls_input_current_limit_show, wls_input_current_limit_store);
 
+static ssize_t wls_weak_charge_disable_store(struct device *dev,
+		struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+	unsigned long r;
+	unsigned long weak_charge_disable;
+	struct qti_charger *chg = this_chip;
+
+	if (!chg) {
+		pr_err("QTI: chip not valid\n");
+		return -ENODEV;
+	}
+
+	r = kstrtoul(buf, 0, &weak_charge_disable);
+	if (r) {
+		mmi_err(chg, "Invalid TCMD = %lu\n", weak_charge_disable);
+		return -EINVAL;
+	}
+
+	r = qti_charger_write(chg, OEM_PROP_WLS_WEAK_CHARGE_CTRL,
+				&weak_charge_disable,
+				sizeof(weak_charge_disable));
+
+	chg->weak_charge_disable = weak_charge_disable;
+	return r ? r : count;
+}
+
+static ssize_t wls_weak_charge_disable_show(struct device *dev,
+		struct device_attribute *attr,
+		char *buf)
+{
+	struct qti_charger *chg = this_chip;
+
+	if (!chg) {
+		pr_err("PEN: chip not valid\n");
+		return -ENODEV;
+	}
+
+	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n", chg->weak_charge_disable);
+}
+
+static DEVICE_ATTR(wls_weak_charge_disable, S_IRUGO|S_IWUSR, wls_weak_charge_disable_show, wls_weak_charge_disable_store);
+
 static ssize_t folio_mode_store(struct device *dev,
 		struct device_attribute *attr,
 		const char *buf, size_t count)
@@ -2036,6 +2351,155 @@ static ssize_t folio_mode_show(struct device *dev,
 }
 static DEVICE_ATTR(folio_mode, S_IRUGO|S_IWUSR, folio_mode_show, folio_mode_store);
 
+static ssize_t thermal_primary_charge_control_limit_store(struct device *dev,
+		struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+	unsigned long r;
+	unsigned long charge_primary_limit_level;
+	struct qti_charger *chg = this_chip;
+
+	if (!chg) {
+		pr_err("QTI: chip not valid\n");
+		return -ENODEV;
+	}
+
+	if (!chg->num_thermal_primary_levels)
+		return 0;
+
+	if (chg->num_thermal_primary_levels < 0) {
+		pr_err("Incorrect num_thermal_primary_levels\n");
+		return -EINVAL;
+	}
+
+	r = kstrtoul(buf, 0, &charge_primary_limit_level);
+	if (r) {
+		pr_err("Invalid charge_primary_limit_level = %lu\n", charge_primary_limit_level);
+		return -EINVAL;
+	}
+
+	if (charge_primary_limit_level < 0 || charge_primary_limit_level > chg->num_thermal_primary_levels) {
+		pr_err("Invalid charge_primary_limit_level: %lu\n", charge_primary_limit_level);
+		return -EINVAL;
+	}
+
+	chg->thermal_primary_fcc_ua = chg->thermal_primary_levels[charge_primary_limit_level];
+	chg->curr_thermal_primary_level = charge_primary_limit_level;
+	pr_info("charge_primary_limit_level = %lu, thermal_primary_fcc_ma = %d",
+			charge_primary_limit_level, chg->thermal_primary_fcc_ua);
+
+	r = qti_charger_write(chg, OEM_PROP_THERM_PRIMARY_CHG_CONTROL,
+				&chg->thermal_primary_fcc_ua,
+				sizeof(chg->thermal_primary_fcc_ua));
+
+	return r ? r : count;
+}
+
+static ssize_t thermal_primary_charge_control_limit_show(struct device *dev,
+		struct device_attribute *attr,
+		char *buf)
+{
+	struct qti_charger *chg = this_chip;
+
+	if (!chg) {
+		pr_err("PEN: chip not valid\n");
+		return -ENODEV;
+	}
+
+	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n", chg->curr_thermal_primary_level );
+}
+static DEVICE_ATTR(thermal_primary_charge_control_limit, S_IRUGO|S_IWUSR, thermal_primary_charge_control_limit_show, thermal_primary_charge_control_limit_store);
+
+static ssize_t thermal_primary_charge_control_limit_max_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct qti_charger *chg = this_chip;
+
+	if (!chg) {
+		pr_err("QTI: chip not valid\n");
+		return -ENODEV;
+	}
+
+	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n", chg->num_thermal_primary_levels);
+}
+static DEVICE_ATTR(thermal_primary_charge_control_limit_max, S_IRUGO, thermal_primary_charge_control_limit_max_show, NULL);
+
+
+static ssize_t thermal_secondary_charge_control_limit_store(struct device *dev,
+		struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+	unsigned long r;
+	unsigned long charge_secondary_limit_level;
+	struct qti_charger *chg = this_chip;
+
+	if (!chg) {
+		pr_err("QTI: chip not valid\n");
+		return -ENODEV;
+	}
+
+	if (!chg->num_thermal_secondary_levels)
+		return 0;
+
+	if (chg->num_thermal_secondary_levels < 0) {
+		pr_err("Incorrect num_thermal_psecondary_levels\n");
+		return -EINVAL;
+	}
+
+	r = kstrtoul(buf, 0, &charge_secondary_limit_level);
+	if (r) {
+		pr_err("Invalid charge_secondary_limit_level = %lu\n", charge_secondary_limit_level);
+		return -EINVAL;
+	}
+
+	if (charge_secondary_limit_level < 0 || charge_secondary_limit_level > chg->num_thermal_secondary_levels) {
+		pr_err("Invalid charge_secondary_limit_level: %lu\n", charge_secondary_limit_level);
+		return -EINVAL;
+	}
+
+	chg->thermal_secondary_fcc_ua = chg->thermal_secondary_levels[charge_secondary_limit_level];
+	chg->curr_thermal_secondary_level = charge_secondary_limit_level;
+	pr_info("charge_secondary_limit_level = %lu, thermal_secondary_fcc_ma = %d",
+			charge_secondary_limit_level, chg->thermal_secondary_fcc_ua);
+
+	r = qti_charger_write(chg, OEM_PROP_THERM_SECONDARY_CHG_CONTROL,
+				&chg->thermal_secondary_fcc_ua,
+				sizeof(chg->thermal_secondary_fcc_ua));
+
+	return r ? r : count;
+}
+
+static ssize_t thermal_secondary_charge_control_limit_show(struct device *dev,
+		struct device_attribute *attr,
+		char *buf)
+{
+	struct qti_charger *chg = this_chip;
+
+	if (!chg) {
+		pr_err("PEN: chip not valid\n");
+		return -ENODEV;
+	}
+
+	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n", chg->curr_thermal_secondary_level );
+}
+static DEVICE_ATTR(thermal_secondary_charge_control_limit, S_IRUGO|S_IWUSR, thermal_secondary_charge_control_limit_show, thermal_secondary_charge_control_limit_store);
+
+static ssize_t thermal_secondary_charge_control_limit_max_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct qti_charger *chg = this_chip;
+
+	if (!chg) {
+		pr_err("QTI: chip not valid\n");
+		return -ENODEV;
+	}
+
+	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n", chg->num_thermal_secondary_levels);
+}
+static DEVICE_ATTR(thermal_secondary_charge_control_limit_max, S_IRUGO, thermal_secondary_charge_control_limit_max_show, NULL);
+
 static ssize_t cid_status_show(struct device *dev,
 					struct device_attribute *attr,
 					char *buf)
@@ -2050,6 +2514,65 @@ static ssize_t cid_status_show(struct device *dev,
 	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n", chg->lpd_info.lpd_cid);
 }
 static DEVICE_ATTR(cid_status, S_IRUGO, cid_status_show, NULL);
+
+static ssize_t typec_reset_store(struct device *dev,
+		struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+	int r;
+	unsigned int reset = 0;
+	struct qti_charger *chg = this_chip;
+
+	if (!chg) {
+		pr_err("QTI: chip not valid\n");
+		return -ENODEV;
+	}
+
+	r = kstrtou32(buf, 0, &reset);
+	if (r) {
+		pr_err("Invalid typec_reset = %d\n", reset);
+		return -EINVAL;
+	}
+
+	if (reset)
+		mmi_warn(chg, "typec_reset triggered\n");
+	else
+		return count;
+
+	r = qti_charger_write(chg, OEM_PROP_TYPEC_RESET,
+			&reset,
+			sizeof(reset));
+
+	return r ? r : count;
+}
+static DEVICE_ATTR(typec_reset, S_IWUSR|S_IWGRP, NULL, typec_reset_store);
+
+static ssize_t fg_operation_store(struct device *dev,
+		struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+	unsigned long r;
+	unsigned long fg_operation_cmd;
+	struct qti_charger *chg = this_chip;
+
+	if (!chg) {
+		pr_err("QTI: chip not valid\n");
+		return -ENODEV;
+	}
+
+	r = kstrtoul(buf, 0, &fg_operation_cmd);
+	if (r) {
+		pr_err("Invalid fg_operation_cmd = %lu\n", fg_operation_cmd);
+		return -EINVAL;
+	}
+
+	r = qti_charger_write(chg, OEM_PROP_FG_OPERATION,
+			&fg_operation_cmd,
+			sizeof(fg_operation_cmd));
+
+	return r ? r : count;
+}
+static DEVICE_ATTR(fg_operation, S_IWUSR|S_IWGRP, NULL, fg_operation_store);
 
 //ATTRIBUTE_GROUPS(qti_charger);
 #define TX_INT_FOD      (0x01<<12)
@@ -2262,6 +2785,30 @@ static int wireless_charger_notify_callback(struct notifier_block *nb,
 			}
 		}
 		break;
+        case NOTIFY_EVENT_WLS_RX_DEV_INFO_UPDATE:
+	/* RX dev info update */
+		if (notify_data->data[0] != chg->rx_dev_mfg) {
+			if (chg->wls_psy) {
+				pr_info("report rx_dev_mfg %#x\n", notify_data->data[0]);
+				sysfs_notify(&chg->wls_psy->dev.parent->kobj, NULL, "rx_dev_manufacturing");
+			}
+			chg->rx_dev_mfg = notify_data->data[0];
+		}
+		if (notify_data->data[1] != chg->rx_dev_type) {
+			if (chg->wls_psy) {
+				pr_info("report rx_dev_type %#x\n", notify_data->data[1]);
+				sysfs_notify(&chg->wls_psy->dev.parent->kobj, NULL, "rx_dev_type");
+			}
+			chg->rx_dev_type = notify_data->data[1];
+		}
+		if (notify_data->data[2] != chg->rx_dev_id) {
+			if (chg->wls_psy) {
+				pr_info("report rx_dev_id %#x\n", notify_data->data[2]);
+				sysfs_notify(&chg->wls_psy->dev.parent->kobj, NULL, "rx_dev_id");
+			}
+			chg->rx_dev_id = notify_data->data[2];
+		}
+		break;
         default:
 		pr_err("Unknown wireless event: %#lx\n", event);
                 break;
@@ -2303,6 +2850,21 @@ static void wireless_psy_init(struct qti_charger *chg)
 				&dev_attr_rx_connected);
         if (rc)
 		pr_err("couldn't create wireless rx_connected\n");
+
+	rc = device_create_file(chg->wls_psy->dev.parent,
+				&dev_attr_rx_dev_manufacturing);
+        if (rc)
+		pr_err("couldn't create wireless rx_dev_manufacturing\n");
+
+	rc = device_create_file(chg->wls_psy->dev.parent,
+				&dev_attr_rx_dev_type);
+        if (rc)
+		pr_err("couldn't create wireless rx_dev_type\n");
+
+	rc = device_create_file(chg->wls_psy->dev.parent,
+				&dev_attr_rx_dev_id);
+        if (rc)
+		pr_err("couldn't create wireless rx_dev_id\n");
 
 	rc = device_create_file(chg->wls_psy->dev.parent,
 				&dev_attr_wls_input_current_limit);
@@ -2354,6 +2916,10 @@ static void wireless_psy_init(struct qti_charger *chg)
         if (rc)
 		pr_err("couldn't create wireless wlc status changed error\n");
 
+	rc = device_create_file(chg->wls_psy->dev.parent,
+				&dev_attr_wls_weak_charge_disable);
+        if (rc)
+		pr_err("couldn't create wireless wlc weak charge disable error\n");
 	chg->wls_nb.notifier_call = wireless_charger_notify_callback;
 	rc = qti_charger_register_notifier(&chg->wls_nb);
 	if (rc)
@@ -2616,6 +3182,320 @@ static int mmi_get_hw_revision(struct qti_charger *chg, u16 *hw_rev)
 	}
 }
 
+static inline int primary_get_max_charge_cntl_limit(struct thermal_cooling_device *tcd,
+                    unsigned long *state)
+{
+    struct qti_charger* chg = tcd->devdata;
+
+    *state = chg->num_thermal_primary_levels;
+
+    return 0;
+}
+
+static inline int primary_get_cur_charge_cntl_limit(struct thermal_cooling_device *tcd,
+                    unsigned long *state)
+{
+    struct qti_charger* chg = tcd->devdata;
+
+    *state = chg->curr_thermal_primary_level;
+
+    return 0;
+}
+
+static int primary_set_cur_charge_cntl_limit(struct thermal_cooling_device *tcd,
+                    unsigned long state)
+{
+    char buf[32] = {0};
+
+    sprintf(buf, "%ld", state);
+
+    return thermal_primary_charge_control_limit_store(NULL, NULL, buf, strlen(buf));
+}
+
+static const struct thermal_cooling_device_ops primary_charge_ops = {
+    .get_max_state = primary_get_max_charge_cntl_limit,
+    .get_cur_state = primary_get_cur_charge_cntl_limit,
+    .set_cur_state = primary_set_cur_charge_cntl_limit,
+};
+
+static inline int secondary_get_max_charge_cntl_limit(struct thermal_cooling_device *tcd,
+                    unsigned long *state)
+{
+    struct qti_charger* chg = tcd->devdata;
+
+    *state = chg->num_thermal_secondary_levels;
+
+    return 0;
+}
+
+static inline int secondary_get_cur_charge_cntl_limit(struct thermal_cooling_device *tcd,
+                    unsigned long *state)
+{
+    struct qti_charger* chg = tcd->devdata;
+
+    *state = chg->curr_thermal_secondary_level;
+
+    return 0;
+}
+
+static int secondary_set_cur_charge_cntl_limit(struct thermal_cooling_device *tcd,
+                    unsigned long state)
+{
+    char buf[32] = {0};
+
+    sprintf(buf, "%ld", state);
+
+    return thermal_secondary_charge_control_limit_store(NULL, NULL, buf, strlen(buf));
+}
+
+static const struct thermal_cooling_device_ops secondary_charge_ops = {
+    .get_max_state = secondary_get_max_charge_cntl_limit,
+    .get_cur_state = secondary_get_cur_charge_cntl_limit,
+    .set_cur_state = secondary_set_cur_charge_cntl_limit,
+};
+
+/*************************
+ * USB   COOLER   START  *
+ *************************/
+static bool mmi_is_softbank_sku(struct qti_charger *chg)
+{
+	char *s = NULL;
+	bool is_softbank = false;
+	char androidboot_carrier_str[RADIO_MAX_LEN];
+
+	if (mmi_get_bootarg("androidboot.carrier=", &s) == 0) {
+		mmi_info(chg, "Get bootarg androidboot.hardware.sku success");
+		if (s != NULL) {
+			strlcpy(androidboot_carrier_str, s, RADIO_MAX_LEN);
+			mmi_info(chg, "carrier: %s", androidboot_carrier_str);
+			if (!strncmp("softbank", androidboot_carrier_str, 8)) {
+				is_softbank = true;
+			}
+		}
+	}
+	return is_softbank;
+}
+static int usb_therm_set_mosfet(struct qti_charger *chg, bool enable)
+{
+	int rc = 0;
+	u32 value = 0;
+	/*set typec mosfet output*/
+	mmi_info(chg, "%s,set mos en: %d, chrg_type: %d, mosfet_is_enable: %d",__func__,enable,chg->chg_info.chrg_type, chg->mosfet_is_enable);
+	if(enable == true && chg->mosfet_is_enable == false){
+		value = 1;
+		rc = qti_charger_write(chg, OEM_PROP_CHG_DISABLE,
+					&value, sizeof(value));
+		value = 1;
+		rc = qti_charger_write(chg, OEM_PROP_CHG_SUSPEND,
+					&value, sizeof(value));
+		udelay(100);
+		if ((chg->chg_info.chrg_type != POWER_SUPPLY_USB_TYPE_SDP)&&
+		    (chg->chg_info.chrg_type !=POWER_SUPPLY_USB_TYPE_CDP) &&
+		    (gpio_is_valid(chg->mos_en_gpio))) {
+			gpio_direction_output(chg->mos_en_gpio, enable);
+			mmi_info(chg, "%s,open mos en: %d %d",__func__,enable,rc);
+		}
+		chg->mosfet_is_enable = true;
+	}
+	else if (enable == false && chg->mosfet_is_enable == true){
+		if(gpio_is_valid(chg->mos_en_gpio)) {
+			gpio_direction_output(chg->mos_en_gpio, enable);
+		}
+		udelay(100);
+		value = 0;
+		rc = qti_charger_write(chg, OEM_PROP_CHG_DISABLE,
+					&value, sizeof(value));
+		value = 0;
+		rc = qti_charger_write(chg, OEM_PROP_CHG_SUSPEND,
+					&value, sizeof(value));
+		chg->mosfet_is_enable = false;
+		mmi_info(chg, "%s,close mos en: %d %d",__func__,enable,rc);
+	} else {
+		mmi_info(chg, "%s,ignore the usb_therm settings",__func__);
+	}
+
+	return rc;
+}
+
+static int usb_therm_get_mosfet(struct qti_charger *chg)
+{
+	int ret = 0;
+
+	/*get typec mosfet output*/
+	if (gpio_is_valid(chg->mos_en_gpio)) {
+//		mmi_err(chip, "%s,get mos en.",__func__);
+		return gpio_get_value(chg->mos_en_gpio);
+	} else {
+		return chg->mosfet_is_enable;
+	}
+
+	return ret;
+}
+
+
+static int usb_therm_get_max_state(struct thermal_cooling_device *cdev,
+	unsigned long *state)
+{
+	*state = 1;
+
+	return 0;
+}
+
+static int usb_therm_get_cur_state(struct thermal_cooling_device *cdev,
+	unsigned long *state)
+{
+	struct qti_charger *chg = cdev->devdata;
+
+	*state = usb_therm_get_mosfet(chg);
+
+	return 0;
+}
+
+static int usb_therm_set_cur_state(struct thermal_cooling_device *cdev,
+	unsigned long state)
+{
+	struct qti_charger *chg = cdev->devdata;
+	if (state) {
+		mmi_info(chg, "Enable typec mosfet.");
+		usb_therm_set_mosfet(chg, true);
+	} else {
+		mmi_info(chg, "Disable typec mosfet.");
+		usb_therm_set_mosfet(chg, false);
+	}
+
+	return 0;
+}
+
+static const struct thermal_cooling_device_ops usb_therm_ops = {
+	.get_max_state = usb_therm_get_max_state,
+	.get_cur_state = usb_therm_get_cur_state,
+	.set_cur_state = usb_therm_set_cur_state,
+};
+
+static int qti_charger_init_usb_therm_cooler(struct qti_charger *chg, u16 hwrev)
+{
+	int ret;
+	u32 support_gpio_hwrev=0x0;
+	/* Register thermal zone cooling device */
+	chg->cdev = thermal_of_cooling_device_register(dev_of_node(chg->dev),
+		"usb_therm_cooler", chg, &usb_therm_ops);
+
+	if (IS_ERR(chg->cdev)) {
+		mmi_err(chg, "Cooling register failed for usb_therm, ret:%ld\n",
+			PTR_ERR(chg->cdev));
+		return PTR_ERR(chg->cdev);
+	}
+	mmi_info(chg, "Cooling register success for usb_therm.");
+
+	if (of_property_read_u32(chg->dev->of_node, "mmi,support-gpio-hwrev", &support_gpio_hwrev)) {
+		support_gpio_hwrev=0x0;
+	}
+
+	/*typec mosfet outout en control*/
+	chg->mos_en_gpio = -1;
+	if (hwrev >= support_gpio_hwrev) {
+		chg->mos_en_gpio = of_get_named_gpio(chg->dev->of_node, "mmi,mos-en-gpio", 0);
+	}
+	mmi_info(chg, "support_gpio_hwrev=0x%x hwrev=0x%x mos_en_gpio=%d",support_gpio_hwrev, hwrev, chg->mos_en_gpio);
+	if (gpio_is_valid(chg->mos_en_gpio))
+	{
+		ret = gpio_request(chg->mos_en_gpio, "mmi mos en pin");
+		if (ret) {
+			mmi_err(chg, "%s: %d gpio(mos en) request failed.", __func__, chg->mos_en_gpio);
+			return ret;
+		}
+
+		gpio_direction_output(chg->mos_en_gpio, 0);//default enable mos charge
+	}
+
+	chg->mosfet_is_enable = false;
+	return 0;
+}
+
+static void thermal_charge_control_init(struct qti_charger *chg)
+{
+	struct power_supply		*battery_psy;
+	int rc;
+
+	if (!chg) {
+		pr_err("QTI: chip not valid\n");
+		return;
+	}
+
+	battery_psy = power_supply_get_by_name("battery");
+	if (!battery_psy) {
+		pr_err("No battery power supply found\n");
+		return;
+	}
+
+	rc = device_create_file(&battery_psy->dev,
+				&dev_attr_thermal_primary_charge_control_limit);
+	if (rc) {
+		pr_err("couldn't create thermal_primary_charge_control_limit\n");
+	}
+
+	rc = device_create_file(&battery_psy->dev,
+				&dev_attr_thermal_primary_charge_control_limit_max);
+	if (rc) {
+		pr_err("couldn't create thermal_primary_charge_control_limit_max\n");
+	}
+
+	rc = device_create_file(&battery_psy->dev,
+				&dev_attr_thermal_secondary_charge_control_limit);
+	if (rc) {
+		pr_err("couldn't create thermal_secondary_charge_control_limit\n");
+	}
+
+	rc = device_create_file(&battery_psy->dev,
+				&dev_attr_thermal_secondary_charge_control_limit_max);
+	if (rc) {
+		pr_err("couldn't create thermal_secondary_charge_control_limit_max\n");
+	}
+
+	chg->primary_tcd = thermal_cooling_device_register("primary_charge", chg, &primary_charge_ops);
+	if (IS_ERR_OR_NULL(chg->primary_tcd)) {
+		rc = PTR_ERR_OR_ZERO(chg->primary_tcd);
+		dev_err(chg->dev, "Failed to register thermal cooling device rc=%d\n", rc);
+	}
+
+	chg->secondary_tcd = thermal_cooling_device_register("secondary_charge", chg, &secondary_charge_ops);
+	if (IS_ERR_OR_NULL(chg->secondary_tcd)) {
+		rc = PTR_ERR_OR_ZERO(chg->secondary_tcd);
+		dev_err(chg->dev, "Failed to register thermal cooling device rc=%d\n", rc);
+	}
+}
+
+static void thermal_charge_control_deinit(struct qti_charger *chg)
+{
+	struct power_supply		*battery_psy;
+
+	if (!chg) {
+		pr_err("QTI: chip not valid\n");
+		return;
+	}
+
+	battery_psy = power_supply_get_by_name("battery");
+	if (!battery_psy) {
+		pr_err("No battery power supply found\n");
+		return;
+	}
+
+	device_remove_file(battery_psy->dev.parent,
+				&dev_attr_thermal_primary_charge_control_limit);
+
+	device_remove_file(battery_psy->dev.parent,
+				&dev_attr_thermal_primary_charge_control_limit_max);
+
+	device_remove_file(battery_psy->dev.parent,
+				&dev_attr_thermal_secondary_charge_control_limit);
+
+	device_remove_file(battery_psy->dev.parent,
+				&dev_attr_thermal_secondary_charge_control_limit_max);
+
+	thermal_cooling_device_unregister(chg->primary_tcd);
+	thermal_cooling_device_unregister(chg->secondary_tcd);
+}
+
 static int qti_charger_init(struct qti_charger *chg)
 {
 	int rc;
@@ -2695,6 +3575,14 @@ static int qti_charger_init(struct qti_charger *chg)
 			return rc;
 		}
 	}
+	
+	if (chg->mosfet_supported && !chg->constraint.factory_version && mmi_is_softbank_sku(chg)) {
+		rc = qti_charger_init_usb_therm_cooler(chg, hw_rev);
+		if (rc < 0) {
+			mmi_err(chg, "Couldn't initialize usb therm cooler rc=%d.", rc);
+			//goto cleanup;
+		}
+	}
 
 	driver = devm_kzalloc(chg->dev,
 				sizeof(struct mmi_charger_driver),
@@ -2713,6 +3601,7 @@ static int qti_charger_init(struct qti_charger *chg)
 	driver->is_charge_halt = qti_charger_is_charge_halt;
 	driver->set_constraint = qti_charger_set_constraint;
 	chg->driver = driver;
+	chg->lpd_info.lpd_cid = -1;
 
 	/* register driver to mmi charger */
 	rc = mmi_register_charger_driver(driver);
@@ -2800,36 +3689,41 @@ static int qti_charger_init(struct qti_charger *chg)
 	}
 
 	rc = device_create_file(chg->dev,
+				&dev_attr_batt_id);
+	if (rc) {
+		mmi_err(chg,
+			   "Couldn't create batt_id\n");
+	}
+
+	rc = device_create_file(chg->dev,
 				&dev_attr_cid_status);
 	if (rc) {
 		mmi_err(chg,
 			   "Couldn't create cid_status\n");
 	}
 
+	rc = device_create_file(chg->dev,
+				&dev_attr_typec_reset);
+	if (rc) {
+		mmi_err(chg,
+			   "Couldn't create typec_reset\n");
+	}
+
+	rc = device_create_file(chg->dev,
+				&dev_attr_fg_operation);
+	if (rc) {
+		mmi_err(chg,
+			   "Couldn't create fg_operation\n");
+	}
+
 	bm_ulog_print_mask_log(BM_ALL, BM_LOG_LEVEL_INFO, OEM_BM_ULOG_SIZE);
 
 	wireless_psy_init(chg);
+	thermal_charge_control_init(chg);
 
 	create_debugfs_entries(chg);
+	trusted_shash_alloc();
 	return 0;
-}
-
-bool qti_charger_reset_chargepump(struct qti_charger *chg)
-{
-	unsigned long reset = 0x1;
-	int rc ;
-
-	if(!chg) {
-		pr_err("QTI: chip not valid");
-		return false;
-	}
-
-	rc = qti_charger_write(chg, OEM_PROP_MASTER_SWITCHEDCAP_RESET, &reset, sizeof(reset));
-	if(rc) {
-		mmi_err(chg, "qit charger reset charger pump register fail:%d\n", rc);
-	}
-
-	return true;
 }
 
 static void qti_charger_shutdown(struct platform_device *pdev)
@@ -2837,8 +3731,6 @@ static void qti_charger_shutdown(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct qti_charger *chg= dev_get_drvdata(dev);
 
-	//reset charger pump register before shutdown.
-	qti_charger_reset_chargepump(chg);
 	mmi_info(chg, "qti_charger_shutdown\n");
 
 	return;
@@ -2853,6 +3745,8 @@ static void qti_charger_deinit(struct qti_charger *chg)
 		return;
 	}
 
+	device_remove_file(chg->dev, &dev_attr_fg_operation);
+	device_remove_file(chg->dev, &dev_attr_typec_reset);
 	device_remove_file(chg->dev, &dev_attr_cid_status);
 	device_remove_file(chg->dev, &dev_attr_tcmd);
 	device_remove_file(chg->dev, &dev_attr_force_pmic_icl);
@@ -2863,11 +3757,13 @@ static void qti_charger_deinit(struct qti_charger *chg)
 	device_remove_file(chg->dev, &dev_attr_wireless_chip_id);
 	device_remove_file(chg->dev, &dev_attr_wls_fod_curr);
 	device_remove_file(chg->dev, &dev_attr_wls_fod_gain);
+	device_remove_file(chg->dev, &dev_attr_batt_id);
 	device_remove_file(chg->dev, &dev_attr_addr);
 	device_remove_file(chg->dev, &dev_attr_data);
 
 	wireless_psy_deinit(chg);
-
+	thermal_charge_control_deinit(chg);
+	trusted_shash_release();
 	if (chg->debug_root)
 		debugfs_remove_recursive(chg->debug_root);
 
@@ -2926,6 +3822,8 @@ static int qti_charger_parse_dt(struct qti_charger *chg)
 	int byte_len;
 	const char *df_sn = NULL, *dev_sn = NULL;
 	struct device_node *node;
+	int len;
+	u32 prev, val;
 
 	node = chg->dev->of_node;
 	dev_sn = mmi_get_battery_serialnumber();
@@ -3041,6 +3939,95 @@ static int qti_charger_parse_dt(struct qti_charger *chg)
 		chg->switched_nums = 1;
 	}
 
+	chg->mosfet_supported = of_property_read_bool(node, "mmi,usb-mosfet-supported");
+
+	rc = of_property_count_elems_of_size(node, "mmi,thermal-primary-mitigation",
+							sizeof(u32));
+	if (rc <= 0) {
+		return 0;
+	}
+
+	len = rc;
+	prev = chg->profile_info.max_fcc_ua;
+
+	for (i = 0; i < len; i++) {
+		rc = of_property_read_u32_index(node,
+					"mmi,thermal-primary-mitigation",
+					i, &val);
+		if (rc < 0) {
+			pr_err("failed to get thermal-primary-mitigation[%d], ret=%d\n", i, rc);
+			return rc;
+		}
+		pr_info("thermal-primary-mitigation[%d], val=%d, prev=%d\n", i, val, prev);
+		if (val > prev) {
+			pr_err("Thermal primary levels should be in descending order\n");
+			chg->num_thermal_primary_levels = -EINVAL;
+			return 0;
+		}
+		prev = val;
+	}
+
+	chg->thermal_primary_levels = devm_kcalloc(chg->dev, len + 1,
+					sizeof(*chg->thermal_primary_levels),
+					GFP_KERNEL);
+	if (!chg->thermal_primary_levels)
+		return -ENOMEM;
+
+	rc = of_property_read_u32_array(node, "mmi,thermal-primary-mitigation",
+						&chg->thermal_primary_levels[1], len);
+	if (rc < 0) {
+		pr_err("Error in reading mmi,thermal-primary-mitigation, rc=%d\n", rc);
+		return rc;
+	}
+	chg->num_thermal_primary_levels = len;
+	chg->thermal_primary_fcc_ua = chg->profile_info.max_fcc_ua;
+	chg->thermal_primary_levels[0] = chg->thermal_primary_levels[1];
+
+	pr_info("Parse mmi,thermal-primary-mitigation successfully, num_primary_levels %d\n", chg->num_thermal_primary_levels);
+
+	rc = of_property_count_elems_of_size(node, "mmi,thermal-secondary-mitigation",
+							sizeof(u32));
+	if (rc <= 0) {
+		return 0;
+	}
+
+	len = rc;
+	prev = chg->profile_info.max_fcc_ua;
+
+	for (i = 0; i < len; i++) {
+		rc = of_property_read_u32_index(node,
+					"mmi,thermal-secondary-mitigation",
+					i, &val);
+		if (rc < 0) {
+			pr_err("failed to get thermal-secondary-mitigation[%d], ret=%d\n", i, rc);
+			return rc;
+		}
+		pr_info("thermal-secondary-mitigation[%d], val=%d, prev=%d\n", i, val, prev);
+		if (val > prev) {
+			pr_err("Thermal secondary levels should be in descending order\n");
+			chg->num_thermal_secondary_levels = -EINVAL;
+			return 0;
+		}
+		prev = val;
+	}
+
+	chg->thermal_secondary_levels = devm_kcalloc(chg->dev, len + 1,
+					sizeof(*chg->thermal_secondary_levels),
+					GFP_KERNEL);
+	if (!chg->thermal_secondary_levels)
+		return -ENOMEM;
+
+	rc = of_property_read_u32_array(node, "mmi,thermal-secondary-mitigation",
+						&chg->thermal_secondary_levels[1], len);
+	if (rc < 0) {
+		pr_err("Error in reading mmi,thermal-secondary-mitigation, rc=%d\n", rc);
+		return rc;
+	}
+	chg->num_thermal_secondary_levels = len;
+	chg->thermal_secondary_fcc_ua = chg->profile_info.max_fcc_ua;
+	chg->thermal_secondary_levels[0] = chg->thermal_secondary_levels[1];
+
+	pr_info("Parse mmi,thermal-secondary-mitigation successfully, num_secondary_levels %d\n", chg->num_thermal_secondary_levels);
 	return 0;
 }
 

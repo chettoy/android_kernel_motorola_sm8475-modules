@@ -1694,6 +1694,56 @@ static ssize_t gain_store(struct device *dev, struct device_attribute *attr, con
 	return count;
 }
 
+static ssize_t strength_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	cdev_t *cdev = dev_get_drvdata(dev);
+	struct aw_haptic *aw_haptic = container_of(cdev, struct aw_haptic, vib_dev);
+	uint8_t gain = 0;
+
+	mutex_lock(&aw_haptic->lock);
+	aw_haptic->func->get_gain(aw_haptic, &gain);
+	mutex_unlock(&aw_haptic->lock);
+
+	return snprintf(buf, PAGE_SIZE, "gain = 0x%02X\n", gain);
+}
+
+static ssize_t strength_store(struct device *dev, struct device_attribute *attr, const char *buf,
+			  size_t count)
+{
+	cdev_t *cdev = dev_get_drvdata(dev);
+	struct aw_haptic *aw_haptic = container_of(cdev, struct aw_haptic, vib_dev);
+	uint32_t val = 0;
+	int rc = 0;
+
+	rc = kstrtouint(buf, 0, &val);
+	if (rc < 0)
+		return rc;
+
+	aw_info("value=0x%02X", val);
+
+	mutex_lock(&aw_haptic->lock);
+
+	switch (val) {
+	case 0:
+		aw_haptic->gain = AW_LIGHT_GAIN;
+		break;
+	case 1:
+		aw_haptic->gain = AW_MEDIUM_GAIN;
+		break;
+	case 2:
+		aw_haptic->gain = AW_STRONG_GAIN;
+		break;
+	default:
+		aw_err("Unsupported strength: %d", val);
+		break;
+	}
+
+	aw_haptic->func->set_gain(aw_haptic, aw_haptic->gain);
+	mutex_unlock(&aw_haptic->lock);
+
+	return count;
+}
+
 static ssize_t seq_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	uint8_t i = 0;
@@ -2555,6 +2605,7 @@ static DEVICE_ATTR_RW(activate);
 static DEVICE_ATTR_RW(activate_mode);
 static DEVICE_ATTR_RW(index);
 static DEVICE_ATTR_RW(gain);
+static DEVICE_ATTR_RW(strength);
 static DEVICE_ATTR_RW(seq);
 static DEVICE_ATTR_RW(rtp_interface);
 static DEVICE_ATTR_RW(loop);
@@ -2588,6 +2639,7 @@ static struct attribute *vibrator_attributes[] = {
 	&dev_attr_activate_mode.attr,
 	&dev_attr_index.attr,
 	&dev_attr_gain.attr,
+	&dev_attr_strength.attr,
 	&dev_attr_seq.attr,
 	&dev_attr_rtp_interface.attr,
 	&dev_attr_loop.attr,
@@ -2970,8 +3022,12 @@ static int tiktap_file_mmap(struct file *file, struct vm_area_struct *vma)
 	int ret = 0;
 
 #if KERNEL_VERSION(4, 7, 0) < LINUX_VERSION_CODE
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,15,178)
+	vm_flags_t vm_flags = VM_READ | VM_WRITE | VM_SHARED;
+#else
 	vm_flags_t vm_flags = calc_vm_prot_bits(PROT_READ|PROT_WRITE, 0) |
 			      calc_vm_flag_bits(MAP_SHARED);
+#endif
 
 	vm_flags |= current->mm->def_flags | VM_MAYREAD | VM_MAYWRITE |
 		    VM_MAYEXEC | VM_SHARED | VM_MAYSHARE;
@@ -3745,7 +3801,9 @@ err_irq_gpio_request:
 err_reset_gpio_request:
 err_parse_dt:
 err_id:
+#ifdef AW_INPUT_FRAMEWORK
 err_input_config:
+#endif
 	devm_kfree(&i2c->dev, aw_haptic);
 	aw_haptic = NULL;
 	return ret;

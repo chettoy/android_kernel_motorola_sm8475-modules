@@ -63,6 +63,21 @@ static ssize_t goodix_ts_stowed_store(struct device *dev,
 static ssize_t goodix_ts_stowed_show(struct device *dev,
 		struct device_attribute *attr, char *buf);
 
+static ssize_t goodix_ts_pocket_mode_show(struct device *dev,
+	struct device_attribute *attr, char *buf);
+static ssize_t goodix_ts_pocket_mode_store(struct device *dev,
+			struct device_attribute *attr, const char *buf, size_t size);
+
+static ssize_t goodix_ts_pitch_show(struct device *dev,
+	struct device_attribute *attr, char *buf);
+static ssize_t goodix_ts_pitch_store(struct device *dev,
+			struct device_attribute *attr, const char *buf, size_t size);
+
+#ifdef CONFIG_ENABLE_GTP_VIRTUAL_FOD
+static ssize_t goodix_ts_fp_event_show(struct device *dev,
+	struct device_attribute *attr, char *buf);
+#endif
+
 static DEVICE_ATTR(edge, (S_IRUGO | S_IWUSR | S_IWGRP),
 	goodix_ts_edge_show, goodix_ts_edge_store);
 static DEVICE_ATTR(interpolation, (S_IRUGO | S_IWUSR | S_IWGRP),
@@ -82,6 +97,17 @@ static DEVICE_ATTR(log_trigger, (S_IRUGO | S_IWUSR | S_IWGRP),
 #endif
 static DEVICE_ATTR(stowed, (S_IWUSR | S_IWGRP | S_IRUGO),
 	goodix_ts_stowed_show, goodix_ts_stowed_store);
+
+static DEVICE_ATTR(pocket_mode, (S_IRUGO | S_IWUSR | S_IWGRP),
+	goodix_ts_pocket_mode_show, goodix_ts_pocket_mode_store);
+
+static DEVICE_ATTR(pitch, (S_IRUGO | S_IWUSR | S_IWGRP),
+	goodix_ts_pitch_show, goodix_ts_pitch_store);
+
+#ifdef CONFIG_ENABLE_GTP_VIRTUAL_FOD
+static DEVICE_ATTR(fp_event, (S_IRUGO | S_IWUSR | S_IWGRP),
+	goodix_ts_fp_event_show, NULL);
+#endif
 
 /* hal settings */
 #define ROTATE_0   0
@@ -129,7 +155,7 @@ static int goodix_ts_mmi_extend_attribute_group(struct device *dev, struct attri
 	if (core_data->board_data.sample_ctrl)
 		ADD_ATTR(sample);
 
-	if (core_data->board_data.stylus_mode_ctrl)
+	if (core_data->board_data.stylus_mode_ctrl || core_data->board_data.passive_stylus_mode_ctrl)
 		ADD_ATTR(stylus_mode);
 
 	if (core_data->board_data.sensitivity_ctrl)
@@ -137,6 +163,16 @@ static int goodix_ts_mmi_extend_attribute_group(struct device *dev, struct attri
 
 	if (core_data->board_data.stowed_mode_ctrl)
 		ADD_ATTR(stowed);
+
+	if (core_data->board_data.pocket_mode_ctrl)
+		ADD_ATTR(pocket_mode);
+
+	if (core_data->board_data.pitch_ctrl)
+		ADD_ATTR(pitch);
+
+#ifdef CONFIG_ENABLE_GTP_VIRTUAL_FOD
+		ADD_ATTR(fp_event);
+#endif
 
 #ifdef CONFIG_GTP_LAST_TIME
 	ADD_ATTR(timestamp);
@@ -348,23 +384,31 @@ static int goodix_clock_enable(struct goodix_ts_core *core_data, bool mode) {
 static int goodix_stylus_mode(struct goodix_ts_core *core_data, int mode) {
 	int ret = 0;
 
-	if (mode) {
-		goodix_clock_enable(core_data, mode);
-		msleep(50);
-		ret = goodix_ts_send_cmd(core_data, STYLUS_MODE_SWITCH_CMD, 5, mode, 0x00);
+	if (core_data->board_data.passive_stylus_mode_ctrl) {
+		ret = goodix_ts_send_cmd(core_data, 0x32, 5, mode, 0x00);
 		if (ret < 0) {
-			ts_err("Failed to Disable stylus mode\n");
+			ts_err("Failed to set stylus mode %d\n", mode);
 			return ret;
 		}
-		msleep(20);
 	} else {
-		ret = goodix_ts_send_cmd(core_data, STYLUS_MODE_SWITCH_CMD, 5, mode, 0x00);
-		if (ret < 0) {
-			ts_err("Failed to Disable stylus mode\n");
-			return ret;
+		if (mode) {
+			goodix_clock_enable(core_data, mode);
+			msleep(50);
+			ret = goodix_ts_send_cmd(core_data, STYLUS_MODE_SWITCH_CMD, 5, mode, 0x00);
+			if (ret < 0) {
+				ts_err("Failed to Disable stylus mode\n");
+				return ret;
+			}
+			msleep(20);
+		} else {
+			ret = goodix_ts_send_cmd(core_data, STYLUS_MODE_SWITCH_CMD, 5, mode, 0x00);
+			if (ret < 0) {
+				ts_err("Failed to Disable stylus mode\n");
+				return ret;
+			}
+			msleep(50);
+			goodix_clock_enable(core_data, mode);
 		}
-		msleep(50);
-		goodix_clock_enable(core_data, mode);
 	}
 
 	ts_info("Success to %s stylus mode", mode ? "Enable" : "Disable");
@@ -381,6 +425,12 @@ static ssize_t goodix_ts_stylus_mode_store(struct device *dev,
 
 	dev = MMI_DEV_TO_TS_DEV(dev);
 	GET_GOODIX_DATA(dev);
+
+	/* if pen in, don't set stylus mode from app */
+#ifdef GTP_PEN_NOTIFIER
+	if (!core_data->gtp_pen_detect_flag)
+		return -EINVAL;
+#endif
 
 	ret = kstrtoul(buf, 0, &mode);
 	if (ret < 0) {
@@ -473,7 +523,8 @@ static int goodix_ts_mmi_set_report_rate(struct goodix_ts_core *core_data)
 				(mode == REPORT_RATE_CMD_480HZ ? "REPORT_RATE_480HZ" :
 				(mode == REPORT_RATE_CMD_576HZ ? "REPORT_RATE_576HZ" :
 				(mode == REPORT_RATE_CMD_720HZ ? "REPORT_RATE_720HZ" :
-				"Unsupported")))));
+				(mode == REPORT_RATE_CMD_120HZ ? "REPORT_RATE_120HZ" :
+				"Unsupported"))))));
 
 	return ret;
 }
@@ -642,6 +693,181 @@ static ssize_t goodix_ts_stowed_show(struct device *dev,
 	ts_info("Stowed state = %d.\n", core_data->set_mode.stowed);
 	return scnprintf(buf, PAGE_SIZE, "0x%02x", core_data->set_mode.stowed);
 }
+
+static ssize_t goodix_ts_pocket_mode_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct platform_device *pdev;
+	struct goodix_ts_core *core_data;
+
+	dev = MMI_DEV_TO_TS_DEV(dev);
+	GET_GOODIX_DATA(dev);
+
+	ts_info("Pocket mode state = %d.\n", core_data->set_mode.pocket_mode);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", core_data->set_mode.pocket_mode);
+}
+
+static ssize_t goodix_ts_pocket_mode_store(struct device *dev,
+			struct device_attribute *attr, const char *buf, size_t size)
+{
+	int ret = 0;
+	unsigned long value = 0;
+	struct platform_device *pdev;
+	struct goodix_ts_core *core_data;
+
+	dev = MMI_DEV_TO_TS_DEV(dev);
+	GET_GOODIX_DATA(dev);
+
+	mutex_lock(&core_data->mode_lock);
+	ret = kstrtoul(buf, 0, &value);
+	if (ret < 0) {
+		ts_err("pocket_mode: Failed to convert value\n");
+		mutex_unlock(&core_data->mode_lock);
+		return -EINVAL;
+	}
+	switch (value) {
+		case 0x10:
+		case 0x20:
+			ts_info("touch pocket mode disable\n");
+			core_data->get_mode.pocket_mode = 0;
+			break;
+		case 0x11:
+		case 0x21:
+			ts_info("touch pocket mode enable\n");
+			core_data->get_mode.pocket_mode = 1;
+			break;
+		default:
+			ts_info("unsupport pocket mode type, value = %lu\n", value);
+			mutex_unlock(&core_data->mode_lock);
+			return -EINVAL;
+	}
+
+	if (core_data->set_mode.pocket_mode == core_data->get_mode.pocket_mode) {
+		ts_info("The value = %d is same, so not to write", core_data->get_mode.pocket_mode);
+		goto exit;
+	}
+
+	if (core_data->power_on == 0) {
+		ts_info("The touch is in sleep state, restore the value when resume\n");
+		goto exit;
+	}
+
+	ret = goodix_ts_send_cmd(core_data, ENTER_POCKET_MODE_CMD, 5,
+		core_data->get_mode.pocket_mode , 0x00);
+	if (ret < 0) {
+		ts_err("failed to send pocket mode cmd");
+		goto exit;
+	}
+
+	core_data->set_mode.pocket_mode = core_data->get_mode.pocket_mode;
+	msleep(20);
+
+	ts_info("Success to %s pocket mode", core_data->get_mode.pocket_mode ? "Enable" : "Disable");
+exit:
+	mutex_unlock(&core_data->mode_lock);
+	return size;
+}
+
+static ssize_t goodix_ts_pitch_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct platform_device *pdev;
+	struct goodix_ts_core *core_data;
+
+	dev = MMI_DEV_TO_TS_DEV(dev);
+	GET_GOODIX_DATA(dev);
+
+	ts_info("Pitch mode state = 0x%02x.\n", core_data->set_mode.pitch_mode);
+	return scnprintf(buf, PAGE_SIZE, "0x%02x\n", core_data->set_mode.pitch_mode);
+}
+
+static ssize_t goodix_ts_pitch_store(struct device *dev,
+			struct device_attribute *attr, const char *buf, size_t size)
+{
+	int ret = 0;
+	unsigned int args[2] = { 0 };
+	struct platform_device *pdev;
+	struct goodix_ts_core *core_data;
+
+	dev = MMI_DEV_TO_TS_DEV(dev);
+	GET_GOODIX_DATA(dev);
+
+	mutex_lock(&core_data->mode_lock);
+	ret = sscanf(buf, "%d %d", &args[0], &args[1]);
+	if (ret < 0) {
+		ts_err("pitch mode: Failed to convert value\n");
+		mutex_unlock(&core_data->mode_lock);
+		return -EINVAL;
+	}
+	switch (args[0]) {
+		case 20:
+			ts_info("touch default cfg value\n");
+			core_data->get_mode.pitch_mode = 0x00;
+			break;
+		case 21:
+			ts_info("touch 1 pitch config\n");
+			core_data->get_mode.pitch_mode = 0x20;
+			break;
+		case 22:
+			ts_info("touch 2 pitch config\n");
+			core_data->get_mode.pitch_mode = 0x40;
+			break;
+		case 23:
+			ts_info("touch 3 pitch config\n");
+			core_data->get_mode.pitch_mode = 0x60;
+			break;
+		case 24:
+			ts_info("touch 4 pitch config\n");
+			core_data->get_mode.pitch_mode = 0x80;
+			break;
+		default:
+			ts_info("unsupport pitch mode type, value = %u\n", args[0]);
+			mutex_unlock(&core_data->mode_lock);
+			return -EINVAL;
+	}
+
+	if (core_data->set_mode.pitch_mode == core_data->get_mode.pitch_mode) {
+		ts_info("The value = 0x%02x is same, so not to write", core_data->get_mode.pitch_mode);
+		goto exit;
+	}
+
+	if (core_data->power_on == 0) {
+		ts_info("The touch is in sleep state, restore the value when resume\n");
+		goto exit;
+	}
+
+	ret = goodix_ts_send_cmd(core_data, PITCH_SWITCH_CMD, 5,
+		core_data->get_mode.pitch_mode , 0x00);
+	if (ret < 0) {
+		ts_err("failed to send pitch mode cmd");
+		goto exit;
+	}
+
+	core_data->set_mode.pitch_mode = core_data->get_mode.pitch_mode;
+	msleep(20);
+
+	ts_info("Success to set pitch mode = 0x%02x", core_data->get_mode.pitch_mode);
+exit:
+	mutex_unlock(&core_data->mode_lock);
+	return size;
+}
+
+#ifdef CONFIG_ENABLE_GTP_VIRTUAL_FOD
+static ssize_t goodix_ts_fp_event_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct platform_device *pdev;
+	struct goodix_ts_core *core_data;
+	int idata = 0;
+
+	dev = MMI_DEV_TO_TS_DEV(dev);
+	GET_GOODIX_DATA(dev);
+
+	idata = atomic_read(&core_data->fp_event);
+	ts_info("fp_event state = 0x%02x.\n", idata);
+	return scnprintf(buf, PAGE_SIZE, "0x%02x\n", idata);
+}
+#endif
 
 static int goodix_ts_mmi_refresh_rate(struct device *dev, int freq)
 {
@@ -1205,7 +1431,8 @@ static int goodix_ts_mmi_post_resume(struct device *dev) {
 				(core_data->get_mode.report_rate_mode == REPORT_RATE_CMD_480HZ ? "REPORT_RATE_480HZ" :
 				(core_data->get_mode.report_rate_mode == REPORT_RATE_CMD_576HZ ? "REPORT_RATE_576HZ" :
 				(core_data->get_mode.report_rate_mode == REPORT_RATE_CMD_720HZ ? "REPORT_RATE_720HZ" :
-				"Unsupported")))));
+				(core_data->get_mode.report_rate_mode == REPORT_RATE_CMD_120HZ ? "REPORT_RATE_120HZ" :
+				"Unsupported"))))));
 		}
 	}
 
@@ -1250,6 +1477,16 @@ static int goodix_ts_mmi_post_resume(struct device *dev) {
 				core_data->get_mode.edge_mode[1], core_data->get_mode.edge_mode[0]);
 		}
 	}
+
+	if (core_data->board_data.pitch_ctrl && core_data->get_mode.pitch_mode) {
+		ret = goodix_ts_send_cmd(core_data, PITCH_SWITCH_CMD, 5, core_data->get_mode.pitch_mode, 0);
+		if (!ret) {
+			core_data->set_mode.pitch_mode = core_data->get_mode.pitch_mode;
+			msleep(20);
+			ts_info("Success to set pitch mode = 0x%02x", core_data->get_mode.pitch_mode);
+		}
+	}
+
 	if (core_data->get_mode.liquid_detection) {
 		ret = goodix_ts_send_cmd(core_data, LIQUID_DETECTION_SWITCH_CMD, 5,
 						core_data->get_mode.liquid_detection, 0x00);
@@ -1276,11 +1513,23 @@ static int goodix_ts_mmi_post_resume(struct device *dev) {
 		core_data->set_mode.stowed = 0;
 	}
 
+	if (core_data->board_data.pocket_mode_ctrl && core_data->get_mode.pocket_mode) {
+		ret = goodix_ts_send_cmd(core_data, ENTER_POCKET_MODE_CMD, 5,
+			core_data->get_mode.pocket_mode , 0x00);
+		if (!ret) {
+			core_data->set_mode.pocket_mode = core_data->get_mode.pocket_mode;
+			ts_info("Success to %s pocket mode", core_data->get_mode.pocket_mode ? "Enable" : "Disable");
+		}
+	}
+
 #ifdef GTP_PEN_NOTIFIER
-	if (core_data->gtp_pen_detect_flag == GTP_PEN_MODE) {
+	if ((core_data->gtp_pen_detect_flag == GTP_PEN_MODE) &&
+		(core_data->get_mode.stylus_mode == GTP_PEN_MODE)) {
 		ret = goodix_ts_send_cmd(core_data, 0x32, 5, GTP_PEN_MODE, 0x00);
-		if (ret < 0)
-			ts_err("failed to send passive pen mode cmd");
+		if (!ret) {
+			core_data->set_mode.stylus_mode = core_data->get_mode.stylus_mode;
+			ts_info("Success to %s stylus mode", core_data->get_mode.stylus_mode ? "Enable" : "Disable");
+		}
 	}
 #endif
 	mutex_unlock(&core_data->mode_lock);
@@ -1308,6 +1557,9 @@ static int goodix_ts_mmi_pre_suspend(struct device *dev) {
 
 	ts_info("Suspend start");
 	atomic_set(&core_data->suspended, 1);
+#ifdef CONFIG_ENABLE_GTP_VIRTUAL_FOD
+	atomic_set(&core_data->fp_event, 0x01);
+#endif
 
 #ifdef CONFIG_GTP_GHOST_LOG_CAPTURE
 	//disable/stop ghost log capture

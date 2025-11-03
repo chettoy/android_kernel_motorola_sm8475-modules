@@ -10,7 +10,7 @@ ifeq ($(DRM_PANEL_NOTIFICATIONS),true)
 endif
 
 ifeq ($(TOUCHSCREEN_GOODIX_BRL_SPI),true)
-ifeq ($(call is-board-platform-in-list,taro kalama parrot crow pineapple), true)
+ifeq ($(call is-board-platform-in-list,taro kalama parrot crow pineapple blair), true)
 	KBUILD_OPTIONS += CONFIG_TOUCHSCREEN_GOODIX_BRL_SPI=y
 else
 	KERNEL_CFLAGS += CONFIG_TOUCHSCREEN_GOODIX_BRL_SPI=y
@@ -35,6 +35,9 @@ endif
 
 ifeq ($(TOUCHSCREEN_FOD),true)
 	KBUILD_OPTIONS += CONFIG_GTP_FOD=y
+	ifeq ($(ENABLE_GTP_VIRTUAL_FOD_UP),true)
+		KBUILD_OPTIONS += CONFIG_ENABLE_GTP_VIRTUAL_FOD=y
+	endif
 endif
 
 ifeq ($(TOUCHSCREEN_LAST_TIME),true)
@@ -55,6 +58,10 @@ endif
 
 ifneq ($(GTP_ENABLE_TOUCH_PALM),)
 	KBUILD_OPTIONS += CONFIG_INPUT_GOODIX_MMI_ENABLE_PALM=y
+endif
+
+ifneq ($(GTP_ENABLE_TOUCH_PALM_BY_ID),)
+	KBUILD_OPTIONS += CONFIG_GTP_ENABLE_TOUCH_PALM_BY_ID=y
 endif
 
 ifeq ($(ENABLE_TP_GHOST_LOG_CAPTURE),true)

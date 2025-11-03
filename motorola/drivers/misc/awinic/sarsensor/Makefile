@@ -1,4 +1,12 @@
 ifeq ($(strip $(MODULE_KERNEL_VERSION)), 5.15)
+MAKE_OPTION = 1
+else ifeq ($(strip $(MODULE_KERNEL_VERSION)), 5.10)
+MAKE_OPTION = 1
+else
+MAKE_OPTION = 0
+endif
+
+ifeq ($(strip $(MAKE_OPTION)), 1)
 all: modules
 modules:
 	$(MAKE) -C $(KERNEL_SRC) M=$(M) modules $(KBUILD_OPTIONS)
@@ -9,7 +17,7 @@ modules_install:
 clean:
 	rm -f *.o *.ko *.mod.c *.mod.o *~ .*.cmd Module.symvers
 	rm -rf .tmp_versions
-KBUILD_EXTRA_SYMBOLS += $(CURDIR)/$(KBUILD_EXTMOD)/../../sensors/$(GKI_OBJ_MODULE_DIR)/Module.symvers
+KBUILD_EXTRA_SYMBOLS += $(CURDIR)/$(KBUILD_EXTMOD)/../../../sensors/$(GKI_OBJ_MODULE_DIR)/Module.symvers
 else
 KERNEL_SRC ?= /lib/modules/$(shell uname -r)/build
 

@@ -310,14 +310,17 @@ struct goodix_ts_board_data {
 
 	bool sensitivity_ctrl;
 	bool stylus_mode_ctrl;
+	bool passive_stylus_mode_ctrl;
 	bool film_mode_ctrl;
 	bool leather_mode_ctrl;
 	bool interpolation_ctrl;
 	bool sample_ctrl;
 	bool report_rate_ctrl;
 	bool edge_ctrl;
+	bool pitch_ctrl;
 	bool stowed_mode_ctrl;
 	bool gesture_wait_pm;
+	bool pocket_mode_ctrl;
 };
 
 enum goodix_fw_update_mode {
@@ -383,7 +386,7 @@ enum touch_point_status {
 /* coordinate package */
 struct goodix_ts_coords {
 	int status; /* NONE, RELEASE, TOUCH */
-#ifdef CONFIG_MOTO_DDA_PASSIVESTYLUS
+#if defined(CONFIG_MOTO_DDA_PASSIVESTYLUS) || defined(CONFIG_ENABLE_GTP_PALM_CANCEL_BY_ID)
 	int plam_status;
 #endif
 	unsigned int x, y, w, p;
@@ -505,11 +508,13 @@ struct goodix_mode_info {
 	int sample;
 	int report_rate_mode;
 	int edge_mode[2];
+	int pitch_mode;
 	int liquid_detection;
 #ifdef GOODIX_PALM_SENSOR_EN
 	int palm_detection;
 #endif
 	int stowed;
+	int pocket_mode;
 };
 
 struct goodix_ts_core {
@@ -596,8 +601,12 @@ struct goodix_ts_core {
 #endif
 
 #ifdef GTP_PEN_NOTIFIER
+	int initialized;
 	int gtp_pen_detect_flag;
 	struct notifier_block pen_notif;
+#endif
+#ifdef CONFIG_ENABLE_GTP_VIRTUAL_FOD
+	atomic_t fp_event;
 #endif
 };
 

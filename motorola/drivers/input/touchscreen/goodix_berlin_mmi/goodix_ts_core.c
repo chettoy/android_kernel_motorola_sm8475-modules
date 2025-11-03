@@ -1100,6 +1100,11 @@ static int goodix_parse_dt(struct device_node *node,
 		}
 	}
 
+	board_data->passive_stylus_mode_ctrl = of_property_read_bool(node,
+					"goodix,passive-stylus-mode-ctrl");
+	if (board_data->passive_stylus_mode_ctrl)
+		ts_info("support goodix passive stylus mode");
+
 	board_data->sensitivity_ctrl = of_property_read_bool(node,
 					"goodix,sensitivity-ctrl");
 	if (board_data->sensitivity_ctrl)
@@ -1135,10 +1140,20 @@ static int goodix_parse_dt(struct device_node *node,
 	if (board_data->edge_ctrl)
 		ts_info("support goodix edge mode");
 
+	board_data->pitch_ctrl = of_property_read_bool(node,
+					"goodix,pitch-ctrl");
+	if (board_data->pitch_ctrl)
+		ts_info("support goodix pitch mode");
+
 	board_data->stowed_mode_ctrl = of_property_read_bool(node,
 					"goodix,stowed-mode-ctrl");
 	if (board_data->stowed_mode_ctrl)
 		ts_info("Support goodix touch stowed mode");
+
+	board_data->pocket_mode_ctrl = of_property_read_bool(node,
+		"goodix,pocket-mode-ctrl");
+	if (board_data->pocket_mode_ctrl)
+		ts_info("Support goodix touch pocket mode");
 
 	if (of_property_read_bool(node, "goodix,gesture-wait-pm")) {
 		ts_info("gesture-wait-pm set");
@@ -1219,7 +1234,7 @@ static void goodix_ts_report_finger(struct input_dev *dev,
 #endif
 	for (i = 0; i < GOODIX_MAX_TOUCH; i++) {
 		if (touch_data->coords[i].status == TS_TOUCH) {
-#ifdef CONFIG_MOTO_DDA_PASSIVESTYLUS
+#if defined(CONFIG_MOTO_DDA_PASSIVESTYLUS) || defined(CONFIG_ENABLE_GTP_PALM_CANCEL_BY_ID)
 			ts_debug("report: id %d, x %d, y %d, w %d, palm %d", i,
 				touch_data->coords[i].x, touch_data->coords[i].y,
 				touch_data->coords[i].w, touch_data->coords[i].plam_status);
@@ -1262,7 +1277,7 @@ static void goodix_ts_report_finger(struct input_dev *dev,
 
 			input_mt_slot(dev, i);
 #ifdef CONFIG_ENABLE_GTP_PALM_CANCEL
-#ifdef CONFIG_MOTO_DDA_PASSIVESTYLUS
+#if defined(CONFIG_MOTO_DDA_PASSIVESTYLUS) || defined(CONFIG_ENABLE_GTP_PALM_CANCEL_BY_ID)
 			if ((tool_type != MT_TOOL_PALM) && touch_data->coords[i].plam_status)
 				tool_type = MT_TOOL_PALM;
 			input_mt_report_slot_state(dev, tool_type, true);
@@ -2362,6 +2377,7 @@ int goodix_ts_stage2_init(struct goodix_ts_core *cd)
 
 #ifdef GTP_PEN_NOTIFIER
 	set_pen_mode_boot(cd);
+	cd->initialized = true;
 #endif
 
 	return 0;
@@ -2524,12 +2540,19 @@ static int pen_notifier_callback(struct notifier_block *self,
 	struct goodix_ts_core *cd = container_of(self,
 		struct goodix_ts_core, pen_notif);
 
+	if (!cd->initialized) return ret;
+
 	ts_info("Received event(%lu) for pen detection\n", event);
 
-	if (event == PEN_DETECTION_INSERT)
+	if (event == PEN_DETECTION_INSERT) {
 		cd->gtp_pen_detect_flag = GTP_FINGER_MODE;
-	else if (event == PEN_DETECTION_PULL)
+		cd->set_mode.stylus_mode = GTP_FINGER_MODE;
+		cd->get_mode.stylus_mode = GTP_FINGER_MODE;
+	} else if (event == PEN_DETECTION_PULL) {
 		cd->gtp_pen_detect_flag = GTP_PEN_MODE;
+		cd->set_mode.stylus_mode = GTP_PEN_MODE;
+		cd->get_mode.stylus_mode = GTP_PEN_MODE;
+	}
 
 	mutex_lock_interruptible(&cd->mode_lock);
 
@@ -2671,6 +2694,9 @@ static int goodix_ts_probe(struct platform_device *pdev)
 		init_waitqueue_head(&core_data->pm_wq);
 	atomic_set(&core_data->pm_resume, 1);
 
+#ifdef CONFIG_ENABLE_GTP_VIRTUAL_FOD
+	atomic_set(&core_data->fp_event, 0x01);
+#endif
 	/* debug node init */
 	goodix_tools_init();
 
@@ -2686,6 +2712,8 @@ static int goodix_ts_probe(struct platform_device *pdev)
 	core_module_prob_sate = CORE_MODULE_PROB_SUCCESS;
 #ifdef GTP_PEN_NOTIFIER
 	core_data->gtp_pen_detect_flag = GTP_FINGER_MODE;
+	core_data->get_mode.stylus_mode = GTP_PEN_MODE; //app default mode is pen
+	core_data->set_mode.stylus_mode = GTP_PEN_MODE;
 #endif
 
 	/* Try start a thread to get config-bin info */
