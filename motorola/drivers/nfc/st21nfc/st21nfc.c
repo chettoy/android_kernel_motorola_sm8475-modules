@@ -40,6 +40,10 @@
 #include <linux/of_gpio.h>
 #include <linux/clk.h>
 
+#ifdef QCOM_NFC_CLK_REQ_WAKE_SET
+#include <linux/pinctrl/qcom-pinctrl.h>
+#endif
+
 
 #define MAX_BUFFER_SIZE 260
 #define WAKEUP_SRC_TIMEOUT	(500)
@@ -688,9 +692,12 @@ static int nfc_parse_dt(struct device *dev, struct st21nfc_platform_data *pdata)
 }
 #endif
 
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 30)
+static int st21nfc_probe(struct i2c_client *client)
+#else
 static int st21nfc_probe(struct i2c_client *client,
 			 const struct i2c_device_id *id)
+#endif
 {
 	int ret = 0;
 	struct st21nfc_platform_data *platform_data;
@@ -700,6 +707,10 @@ static int st21nfc_probe(struct i2c_client *client,
 	int core_reset_ntf_start_point = 0;
 	//int print_point = 0;
 	char *tmp = NULL;
+#endif
+
+#ifdef QCOM_NFC_CLK_REQ_WAKE_SET
+	unsigned int clk_req_gpio;
 #endif
 
 	pr_info("st21nfc_probe\n");
@@ -806,6 +817,16 @@ static int st21nfc_probe(struct i2c_client *client,
 				ret = -ENODEV;
 				goto err_clkreq_gpio;
 			}
+#ifdef QCOM_NFC_CLK_REQ_WAKE_SET
+			ret = of_property_read_u32_index(client->dev.of_node, "st,clkreq_gpio", 1, &clk_req_gpio);
+			if (ret < 0) {
+				pr_err("%s Failed to read clkreq gpio number\n", __func__);
+			}
+			ret = msm_gpio_mpm_wake_set(clk_req_gpio, true);
+			if (ret < 0) {
+				pr_err("%s Failed to setup clkreq gpio %d as wakeup capable\n",__func__, clk_req_gpio);
+			}
+#endif
 		}
 	} else {
 		pr_warn("clkreq gpio not provided. Ext xtal expected\n");
@@ -869,7 +890,7 @@ static int st21nfc_probe(struct i2c_client *client,
 		pr_err("st_clock_select failed\n");
 		goto err_request_irq_failed;
 	}
-	pr_info("done successfully\n");
+	pr_err("done successfully\n");
 
 #ifdef ST_NFC_HW_DETECT
         pr_info("Start hw checking, double pulse request");

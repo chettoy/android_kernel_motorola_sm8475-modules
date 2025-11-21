@@ -25,7 +25,11 @@
 #include <linux/string.h>
 #include <linux/mutex.h>
 #include <linux/delay.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,6,0)
+#include <linux/soc/qcom/qti_pmic_glink.h>
+#else
 #include <linux/soc/qcom/pmic_glink.h>
+#endif
 #include <linux/power/bm_adsp_ulog.h>
 #include <linux/gpio.h>
 #include <linux/of_gpio.h>
@@ -58,6 +62,8 @@
 
 #define RADIO_MAX_LEN 33
 
+#define ULOG_DURATION_MS		60000
+
 static bool debug_enabled;
 module_param(debug_enabled, bool, 0600);
 MODULE_PARM_DESC(debug_enabled, "Enable debug for qti glink charger driver");
@@ -68,6 +74,7 @@ struct battery_info {
 	int batt_soc; /* 0 ~ 10000 indicating 0% to 100% */
 	int batt_temp; /* hundredth degree */
 	int batt_status;
+	int batt_soh; /*state of health*/
 	int batt_full_uah;
 	int batt_design_uah;
 	int batt_chg_counter;
@@ -643,6 +650,7 @@ static int qti_charger_get_batt_info(void *data, struct mmi_battery_info *batt_i
 	chg->batt_info.batt_chg_counter = info.batt_chg_counter;
 	chg->batt_info.batt_fv_mv = info.batt_fv_uv / 1000;
 	chg->batt_info.batt_fcc_ma = info.batt_fcc_ua / 1000;
+	chg->batt_info.batt_soh = info.batt_soh;
 	memcpy(batt_info, &chg->batt_info, sizeof(struct mmi_battery_info));
 
 	if (batt_status != chg->batt_info.batt_status) {
@@ -789,7 +797,7 @@ void qti_fg_charge_dump_info(struct qti_charger *chg, struct fg_dump fg_info)
 
 static void qti_encrypt_authentication(struct qti_charger *chg)
 {
-	int i;
+	int i = 0, ret = 0;
 	TRUSTED_SHASH_RESULT trusted_result;
 	struct encrypted_data send_data;
 	u8 random_num[4] = {0};
@@ -802,8 +810,13 @@ static void qti_encrypt_authentication(struct qti_charger *chg)
 		mmi_info(chg, "encrypt random_num1[%d]: %d, 0x%x \n", i, send_data.random_num[i], send_data.random_num[i]);
 	}
 
-	trusted_sha1(trusted_result.random_num, 4, trusted_result.sha1);
-	trusted_hmac(trusted_result.random_num, 4, trusted_result.hmac_sha256);
+	ret = trusted_sha1(trusted_result.random_num, 4, trusted_result.sha1);
+	ret = trusted_hmac(trusted_result.random_num, 4, trusted_result.hmac_sha256);
+
+	if (ret) {
+		mmi_info(chg, "encrypt failed\n");
+		return;
+	}
 
 	for (i = 0;i < 4;i++) {
 	    send_data.hmac_data[i] = trusted_result.hmac_sha256[3 + (4 * i)] + (trusted_result.hmac_sha256[2 + (4 * i)] << 8) +
@@ -866,7 +879,7 @@ static int qti_charger_get_chg_info(void *data, struct mmi_charger_info *chg_inf
 	if ((prev_cid != -1 && chg->lpd_info.lpd_cid == -1) ||
             (!prev_lpd && chg->lpd_info.lpd_present)) {
 		if (!lpd_ulog_triggered && !otg_ulog_triggered)
-			bm_ulog_enable_log(true);
+			bm_ulog_enable_log(true, ULOG_DURATION_MS);
 		lpd_ulog_triggered = true;
 		mmi_err(chg, "LPD: present=%d, rsbu1=%d, rsbu2=%d, cid=%d\n",
 			chg->lpd_info.lpd_present,
@@ -876,7 +889,7 @@ static int qti_charger_get_chg_info(void *data, struct mmi_charger_info *chg_inf
 	} else if ((chg->lpd_info.lpd_cid != -1 && prev_cid == -1) ||
 		   (!chg->lpd_info.lpd_present && prev_lpd)) {
 		if (lpd_ulog_triggered && !otg_ulog_triggered)
-			bm_ulog_enable_log(false);
+			bm_ulog_enable_log(false, 0);
 		lpd_ulog_triggered = false;
 		mmi_warn(chg, "LPD: present=%d, rsbu1=%d, rsbu2=%d, cid=%d\n",
 			chg->lpd_info.lpd_present,
@@ -893,12 +906,12 @@ static int qti_charger_get_chg_info(void *data, struct mmi_charger_info *chg_inf
 
 	if (info.chrg_otg_enabled && (info.chrg_uv < VBUS_MIN_MV * 1000)) {
 		if (!otg_ulog_triggered && !lpd_ulog_triggered)
-			bm_ulog_enable_log(true);
+			bm_ulog_enable_log(true, ULOG_DURATION_MS);
 		otg_ulog_triggered = true;
 		mmi_err(chg, "OTG: vbus collapse, vbus=%duV\n", info.chrg_uv);
 	} else if (info.chrg_otg_enabled) {
 		if (otg_ulog_triggered && !lpd_ulog_triggered)
-			bm_ulog_enable_log(false);
+			bm_ulog_enable_log(false, 0);
 		otg_ulog_triggered = false;
 	}
 
@@ -1563,6 +1576,29 @@ static DEVICE_ATTR(wireless_chip_id, S_IRUGO,
 		wireless_chip_id_show,
 		NULL);
 
+static ssize_t wireless_fw_ver_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	int data;
+	struct qti_charger *chg = dev_get_drvdata(dev);
+
+	if (!chg) {
+		pr_err("QTI: chip not valid\n");
+		return -ENODEV;
+	}
+
+	qti_charger_read(chg, OEM_PROP_WLS_FW_VER,
+				&data,
+				sizeof(int));
+
+	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "0x%04x\n", data);
+}
+
+static DEVICE_ATTR(wireless_fw_ver, S_IRUGO,
+		wireless_fw_ver_show,
+		NULL);
+
 static int fod_gain_store(struct qti_charger *chip, const char *buf,
 	u32 *fod_array)
 {
@@ -2203,6 +2239,50 @@ static ssize_t rx_dev_id_show(struct device *dev,
 }
 static DEVICE_ATTR(rx_dev_id, S_IRUGO,
 		rx_dev_id_show,
+		NULL);
+
+static ssize_t wlc_fac_vbus_voltage_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	u32 vbus = 0;
+	struct qti_charger *chg = this_chip;
+
+	if (!chg) {
+		pr_err("QTI: chip not valid\n");
+		return -ENODEV;
+	}
+
+	qti_charger_read(chg, OEM_PROP_WLS_FAC_VBUS_VOLTAGE_ID,
+				&vbus,
+				sizeof(vbus));
+
+	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n", vbus);
+}
+static DEVICE_ATTR(wlc_fac_vbus_voltage, S_IRUGO,
+		wlc_fac_vbus_voltage_show,
+		NULL);
+
+static ssize_t wlc_fac_ibus_current_show(struct device *dev,
+					struct device_attribute *attr,
+					char *buf)
+{
+	u32 ibus = 0;
+	struct qti_charger *chg = this_chip;
+
+	if (!chg) {
+		pr_err("QTI: chip not valid\n");
+		return -ENODEV;
+	}
+
+	qti_charger_read(chg, OEM_PROP_WLS_FAC_IBUS_CURRENT_ID,
+				&ibus,
+				sizeof(ibus));
+
+	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n", ibus);
+}
+static DEVICE_ATTR(wlc_fac_ibus_current, S_IRUGO,
+		wlc_fac_ibus_current_show,
 		NULL);
 
 
@@ -2920,6 +3000,14 @@ static void wireless_psy_init(struct qti_charger *chg)
 				&dev_attr_wls_weak_charge_disable);
         if (rc)
 		pr_err("couldn't create wireless wlc weak charge disable error\n");
+	rc = device_create_file(chg->wls_psy->dev.parent,
+				&dev_attr_wlc_fac_vbus_voltage);
+        if (rc)
+		pr_err("couldn't create wireless wlc fac_vbus changed error\n");
+	rc = device_create_file(chg->wls_psy->dev.parent,
+				&dev_attr_wlc_fac_ibus_current);
+        if (rc)
+		pr_err("couldn't create wireless wlc fac_ibus changed error\n");
 	chg->wls_nb.notifier_call = wireless_charger_notify_callback;
 	rc = qti_charger_register_notifier(&chg->wls_nb);
 	if (rc)
@@ -3658,6 +3746,13 @@ static int qti_charger_init(struct qti_charger *chg)
 	if (rc) {
 		mmi_err(chg,
 			   "Couldn't create wireless_chip_id\n");
+	}
+
+	rc = device_create_file(chg->dev,
+				&dev_attr_wireless_fw_ver);
+	if (rc) {
+		mmi_err(chg,
+			   "Couldn't create wireless_fw_ver\n");
 	}
 
 	rc = device_create_file(chg->dev,

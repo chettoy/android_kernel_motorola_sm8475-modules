@@ -16,54 +16,50 @@
  * Implements the Motorola Kernel Integrity Protection Hypervisor API.
  */
 #include <linux/memory.h>
-#include <linux/qcom_scm.h>
-#include <soc/qcom/qseecom_scm.h>
-#include <soc/qcom/qseecomi.h>
+#include <linux/arm-smccc.h>
 
 #include "rkp_hvc_api.h"
 
-int mark_range_ro_smc(uint64_t start, uint64_t end)
+/**
+ * mrkp_smc - raw arm SMC call for mrkp
+ * @id: SMC call ID
+ * @arg0: argument in x2 register
+ * @arg1: argument in x3 register
+ *
+ * Unfortunately using the QCOM API leads to a very infrequent
+ * crash as it attempts to acquire a mutex while we may be
+ * performing a cross-CPU spinlock. arg0 and arg1 are at the
+ * intentionally wrong places here as the QCOM API misplaced
+ * them into x2/x3 rather than x1, and for historical reasons
+ * we adapted.
+ */
+static void mrkp_smc(uint64_t id, uint64_t arg0, uint64_t arg1, uint64_t arg2)
 {
-	struct qseecom_scm_desc desc = { 0 };
-
-	desc.arginfo = TZ_SYSCALL_CREATE_PARAM_ID_8(0, 0, 0, 0, 0, 0, 0, 0);
-	desc.args[0] = __virt_to_phys(start);
-	desc.args[1] = __virt_to_phys(end);
-	return qcom_scm_qseecom_call(MOTO_RKP_SMCID | MARK_RANGE_RO, &desc, 1);
+  struct arm_smccc_res res;
+  struct arm_smccc_quirk quirk = { .id = ARM_SMCCC_QUIRK_QCOM_A6 };
+  quirk.state.a6 = 0;
+  do {
+    arm_smccc_smc_quirk(MOTO_RKP_SMCID | id, 0, arg0, arg1, arg2, 0,
+                        quirk.state.a6, 0, &res, &quirk);
+  } while (res.a0);
 }
 
-int add_jump_entry_lookup(uint64_t vaddr, uint64_t size)
+void mark_range_ro_smc(uint64_t start, uint64_t end, uint64_t type)
 {
-	struct qseecom_scm_desc desc = { 0 };
-
-	desc.arginfo = TZ_SYSCALL_CREATE_PARAM_ID_8(0, 0, 0, 0, 0, 0, 0, 0);
-	desc.args[0] = vaddr;
-	desc.args[1] = size;
-	return qcom_scm_qseecom_call(MOTO_RKP_SMCID | ADD_JUMP_LABEL_LOOKUP,
-				     &desc, 1);
+	mrkp_smc(KERN_MARK_RANGE_RO_SMC_ID, start, end, 0);
 }
 
-int lock_rkp(void)
+void add_jump_entry_lookup(uint64_t paddr, uint64_t size)
 {
-	struct qseecom_scm_desc desc = { 0 };
-
-	desc.arginfo = TZ_SYSCALL_CREATE_PARAM_ID_8(0, 0, 0, 0, 0, 0, 0, 0);
-	return qcom_scm_qseecom_call(MOTO_RKP_SMCID | LOCK_RKP, &desc, 1);
+	mrkp_smc(KERN_ADD_JUMP_ENTRY_LOOKUP_SMC_ID, paddr, size, 0);
 }
 
-int prepare_hugepage(uint64_t addr)
+void lock_rkp(void)
 {
-	struct qseecom_scm_desc desc = { 0 };
-
-	desc.arginfo = TZ_SYSCALL_CREATE_PARAM_ID_8(0, 0, 0, 0, 0, 0, 0, 0);
-	desc.args[0] = __virt_to_phys(addr);
-	return qcom_scm_qseecom_call(MOTO_RKP_SMCID | PREPARE_BLOCK, &desc, 1);
+	mrkp_smc(KERN_LOCK_RKP_SMC_ID, 0, 0, 0);
 }
 
-int commit_hugepage(void)
+void amem_register(uint64_t paddr, uint64_t size)
 {
-	struct qseecom_scm_desc desc = { 0 };
-
-	desc.arginfo = TZ_SYSCALL_CREATE_PARAM_ID_8(0, 0, 0, 0, 0, 0, 0, 0);
-	return qcom_scm_qseecom_call(MOTO_RKP_SMCID | COMMIT_BLOCK, &desc, 1);
+	mrkp_smc(KERN_REGISTER_AMEM_SMC_ID, paddr, size, 0);
 }

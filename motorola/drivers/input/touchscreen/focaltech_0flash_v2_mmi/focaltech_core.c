@@ -39,6 +39,9 @@
 #include <linux/of_irq.h>
 #if defined(CONFIG_DRM)
 #if defined(CONFIG_DRM_PANEL)
+#ifdef CONFIG_FOCALTECH_DRM_PANEL_EVENT_NOTIFICATIONS
+#include <linux/soc/qcom/panel_event_notifier.h>
+#endif
 #include <drm/drm_panel.h>
 #else
 #include <linux/msm_drm_notify.h>
@@ -51,6 +54,20 @@
 #define FTS_SUSPEND_LEVEL 1     /* Early-suspend level */
 #endif
 #include "focaltech_core.h"
+
+#ifdef CONFIG_FTS_SPI_CS_DELAY
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
+#include <linux/spi/spi-msm-geni.h>
+#else
+#include <linux/spi/spi-geni-qcom.h>
+#endif
+#endif
+
+#ifdef CONFIG_INPUT_TOUCHSCREEN_MMI
+#include <linux/mmi_device.h>
+extern int fts_mmi_dev_register(struct fts_ts_data *ts_data);
+extern void fts_mmi_dev_unregister(struct fts_ts_data *ts_data);
+#endif
 
 #ifdef FOCALTECH_CONFIG_PANEL_NOTIFICATIONS
 #define register_panel_notifier panel_register_notifier
@@ -89,8 +106,14 @@ static bool time_flag = 1;
 /*****************************************************************************
 * Static function prototypes
 *****************************************************************************/
+#ifndef CONFIG_INPUT_TOUCHSCREEN_MMI
 static int fts_ts_suspend(struct device *dev);
 static int fts_ts_resume(struct device *dev);
+#ifdef CONFIG_FOCALTECH_DRM_PANEL_EVENT_NOTIFICATIONS
+static void fts_ts_panel_notifier_callback(enum panel_event_notifier_tag tag,
+		 struct panel_event_notification *event, void *client_data);
+#endif
+#endif
 
 int fts_check_cid(struct fts_ts_data *ts_data, u8 id_h)
 {
@@ -109,6 +132,78 @@ int fts_check_cid(struct fts_ts_data *ts_data, u8 id_h)
     }
 
     return -ENODATA;
+}
+
+struct focaltech_ic_report_rate_config report_rate_config_info = {
+	.rate_config_count = 2,
+	.refresh_rate_ctrl = 0,
+	.interpolation_ctrl = 1,
+	{
+		{
+			.interpolation_flag = 0,
+			.report_rate = 240,
+			.command = 0,
+		},
+		{
+			.interpolation_flag = 1,
+			.report_rate = 120,
+			.command = 1,
+		},
+	}
+};
+
+int fts_mmi_get_report_rate(struct fts_ts_data *ts_data)
+{
+	int refresh_rate_ctrl = 0;
+	int interpolation_ctrl = 0;
+	int interpolation_flag = 0;
+	int refresh_rate = 0;
+	int i = 0;
+
+	refresh_rate_ctrl = ts_data->pdata->report_rate_ctrl;
+	interpolation_ctrl = ts_data->pdata->interpolation_ctrl;
+
+	interpolation_flag = ts_data->get_mode.interpolation;
+	refresh_rate = ts_data->refresh_rate;
+
+	FTS_DEBUG("refresh_rate_ctrl: %d, interpolation_ctrl: %d, interpolation_flag: %d, refresh_rate: %d",
+		refresh_rate_ctrl, interpolation_ctrl, interpolation_flag, refresh_rate);
+
+	if (refresh_rate_ctrl == 0 && interpolation_ctrl == 1) {
+		for (i = 0; i < report_rate_config_info.rate_config_count; i++) {
+			if (interpolation_flag == report_rate_config_info.report_rate_info[i].interpolation_flag) {
+				break;
+			}
+		}
+	} else if (refresh_rate_ctrl == 1 && interpolation_ctrl == 1) {
+		for (i = 0; i < report_rate_config_info.rate_config_count; i++) {
+			if ((interpolation_flag == report_rate_config_info.report_rate_info[i].interpolation_flag) &&
+				((refresh_rate >= report_rate_config_info.report_rate_info[i].refresh_rate[0]) &&
+				(refresh_rate <= report_rate_config_info.report_rate_info[i].refresh_rate[1]))) {
+				break;
+			}
+		}
+	} else if (refresh_rate_ctrl == 1 && interpolation_ctrl == 0) {
+		for (i = 0; i < report_rate_config_info.rate_config_count; i++) {
+			if ((refresh_rate >= report_rate_config_info.report_rate_info[i].refresh_rate[0]) &&
+				(refresh_rate <= report_rate_config_info.report_rate_info[i].refresh_rate[1])) {
+				break;
+			}
+		}
+	} else {
+		//refresh_rate_ctrl = 0, interpolation_ctrl = 0
+		i = 0;
+	}
+
+	if (i == report_rate_config_info.rate_config_count) {
+		FTS_ERROR("Get config report rate fail");
+		return -1;
+	} else {
+		FTS_DEBUG("Get config report rate %dHZ, command : 0x%02x ",
+			report_rate_config_info.report_rate_info[i].report_rate,
+			report_rate_config_info.report_rate_info[i].command);
+		return report_rate_config_info.report_rate_info[i].command;
+	}
 }
 
 /*****************************************************************************
@@ -522,7 +617,9 @@ static int fts_input_report_b(struct fts_ts_data *ts_data, struct ts_event *even
             input_mt_slot(input_dev, events[i].id);
             input_mt_report_slot_state(input_dev, MT_TOOL_FINGER, true);
 #if FTS_REPORT_PRESSURE_EN
-            input_report_abs(input_dev, ABS_MT_PRESSURE, events[i].p);
+            if(fts_data->high_resolution_num == 1){
+                input_report_abs(input_dev, ABS_MT_PRESSURE, events[i].p);
+            }
 #endif
             input_report_abs(input_dev, ABS_MT_TOUCH_MAJOR, events[i].area);
             input_report_abs(input_dev, ABS_MT_POSITION_X, events[i].x);
@@ -774,6 +871,12 @@ static int fts_read_parse_touchdata(struct fts_ts_data *ts_data, u8 *touch_buf)
         return TOUCH_FW_INIT;
     }
 
+	if(fts_data->high_resolution_num == 4){
+	    if (TOUCH_DEFAULT == ((touch_buf[FTS_TOUCH_E_NUM] >> 4) & 0x0F)) {
+	        return TOUCH_DEFAULT_HI_RES;
+	    }
+	}
+
     return ((touch_buf[FTS_TOUCH_E_NUM] >> 4) & 0x0F);
 }
 
@@ -901,6 +1004,61 @@ static int fts_irq_read_report(struct fts_ts_data *ts_data)
         mutex_unlock(&ts_data->report_mutex);
         break;
 #endif
+
+    case TOUCH_DEFAULT_HI_RES:
+        if(fts_data->high_resolution_num == 4){
+            finger_num = touch_buf[FTS_TOUCH_E_NUM] & 0x0F;
+            if (finger_num > max_touch_num) {
+                FTS_ERROR("invalid point_num(%d)", finger_num);
+                return -EIO;
+            }
+
+            for (i = 0; i < max_touch_num; i++) {
+                base = FTS_ONE_TCH_LEN * i + 2;
+                pointid = (touch_buf[FTS_TOUCH_OFF_ID_YH + base]) >> 4;
+                if (pointid >= FTS_MAX_ID)
+                    break;
+                else if (pointid >= max_touch_num) {
+                    FTS_ERROR("ID(%d) beyond max_touch_number", pointid);
+                    return -EINVAL;
+                }
+
+                events[i].id = pointid;
+                events[i].flag = touch_buf[FTS_TOUCH_OFF_E_XH + base] >> 6;
+                events[i].x = ((touch_buf[FTS_TOUCH_OFF_E_XH + base] & 0x0F) << 12) \
+                            + ((touch_buf[FTS_TOUCH_OFF_XL + base] & 0xFF) << 4) \
+                            + ((touch_buf[FTS_TOUCH_OFF_PRE + base] >> 4) & 0x0F);
+                events[i].y = ((touch_buf[FTS_TOUCH_OFF_ID_YH + base] & 0x0F) << 12) \
+                            + ((touch_buf[FTS_TOUCH_OFF_YL + base] & 0xFF) << 4) \
+                            + (touch_buf[FTS_TOUCH_OFF_PRE + base] & 0x0F);
+                events[i].x = (events[i].x * FTS_TOUCH_HIRES_X ) / FTS_HI_RES_X_MAX;
+                events[i].y = (events[i].y * FTS_TOUCH_HIRES_X ) / FTS_HI_RES_X_MAX;
+                events[i].p =  touch_buf[FTS_TOUCH_OFF_PRE + base];
+                if (events[i].p <= 0) events[i].p = 0x3F;
+                events[i].area = touch_buf[FTS_TOUCH_OFF_AREA + base];
+                if (events[i].area <= 0) events[i].area = 0x09;
+                event_num++;
+                if (EVENT_DOWN(events[i].flag) && (finger_num == 0)) {
+                    FTS_INFO("abnormal touch data from fw");
+                    return -EIO;
+                }
+            }
+
+            if (event_num == 0) {
+                FTS_INFO("no touch point information(%02x)", touch_buf[2]);
+                return -EIO;
+            }
+            ts_data->touch_event_num = event_num;
+
+            mutex_lock(&ts_data->report_mutex);
+#if FTS_MT_PROTOCOL_B_EN
+            fts_input_report_b(ts_data, events);
+#else
+            fts_input_report_a(ts_data, events);
+#endif
+            mutex_unlock(&ts_data->report_mutex);
+        }
+	break;
 
     case TOUCH_EVENT_NUM:
         event_num = touch_buf[FTS_TOUCH_E_NUM] & 0x0F;
@@ -1147,7 +1305,9 @@ static int fts_input_init(struct fts_ts_data *ts_data)
     input_set_abs_params(input_dev, ABS_MT_POSITION_Y, pdata->y_min, pdata->y_max, 0, 0);
     input_set_abs_params(input_dev, ABS_MT_TOUCH_MAJOR, 0, 0xFF, 0, 0);
 #if FTS_REPORT_PRESSURE_EN
-    input_set_abs_params(input_dev, ABS_MT_PRESSURE, 0, 0xFF, 0, 0);
+    if(fts_data->high_resolution_num == 1){
+        input_set_abs_params(input_dev, ABS_MT_PRESSURE, 0, 0xFF, 0, 0);
+    }
 #endif
 
     ret = input_register_device(input_dev);
@@ -1194,7 +1354,7 @@ static int fts_buffer_init(struct fts_ts_data *ts_data)
 }
 
 #if FTS_PINCTRL_EN
-static int fts_pinctrl_init(struct fts_ts_data *ts)
+int fts_pinctrl_init(struct fts_ts_data *ts)
 {
     int ret = 0;
 
@@ -1238,7 +1398,7 @@ err_pinctrl_get:
     return ret;
 }
 
-static int fts_pinctrl_select_normal(struct fts_ts_data *ts)
+int fts_pinctrl_select_normal(struct fts_ts_data *ts)
 {
     int ret = 0;
 
@@ -1252,7 +1412,7 @@ static int fts_pinctrl_select_normal(struct fts_ts_data *ts)
     return ret;
 }
 
-static int fts_pinctrl_select_suspend(struct fts_ts_data *ts)
+int fts_pinctrl_select_suspend(struct fts_ts_data *ts)
 {
     int ret = 0;
 
@@ -1266,7 +1426,7 @@ static int fts_pinctrl_select_suspend(struct fts_ts_data *ts)
     return ret;
 }
 
-static int fts_pinctrl_select_release(struct fts_ts_data *ts)
+int fts_pinctrl_select_release(struct fts_ts_data *ts)
 {
     int ret = 0;
 
@@ -1535,6 +1695,7 @@ static int fts_get_dt_coords(struct device *dev, char *name,
         pdata->y_max = FTS_Y_MAX_DISPLAY_DEFAULT;
         return -ENODATA;
     } else {
+        FTS_INFO("x_min = %d,y_min = %d, x_max = %d, y_max = %d", coords[0], coords[1], coords[2], coords[3]);
         pdata->x_min = coords[0];
         pdata->y_min = coords[1];
         pdata->x_max = coords[2];
@@ -1632,10 +1793,30 @@ static int fts_parse_dt(struct device *dev, struct fts_ts_platform_data *pdata)
 	} else {
 		FTS_INFO("panel supplier is %s", (char *)fts_data->panel_supplier);
 	}
+
+    ret = of_property_read_u32(np, "focaltech,high-resolution", &temp_val);
+    if(ret < 0){
+        FTS_ERROR("Unable to get focaltech,high-resolution");
+        fts_data->high_resolution_num = 1;
+    }else {
+        fts_data->high_resolution_num = temp_val;
+        FTS_INFO("high_resolution_num = %d", fts_data->high_resolution_num);
+    }
+
+	pdata->interpolation_ctrl = of_property_read_bool(np,
+					"focaltech,interpolation-ctrl");
+	if (pdata->interpolation_ctrl)
+		FTS_INFO("support focaltech interpolation mode");
+
+	pdata->report_rate_ctrl = of_property_read_bool(np,
+					"focaltech,report_rate-ctrl");
+	if (pdata->report_rate_ctrl)
+		FTS_INFO("support focaltech report rate switch mode");
     FTS_FUNC_EXIT();
     return 0;
 }
 
+#ifndef CONFIG_INPUT_TOUCHSCREEN_MMI
 static void fts_resume_work(struct work_struct *work)
 {
     struct fts_ts_data *ts_data = container_of(work, struct fts_ts_data,
@@ -1676,6 +1857,68 @@ static int drm_check_dt(struct device_node *np)
     return -ENODEV;
 }
 
+#ifdef CONFIG_FOCALTECH_DRM_PANEL_EVENT_NOTIFICATIONS
+static void fts_ts_register_for_panel_events(struct device_node *dp,
+					struct fts_ts_data *ts_data)
+{
+	void *cookie = NULL;
+
+
+	cookie = panel_event_notifier_register(PANEL_EVENT_NOTIFICATION_PRIMARY,
+			PANEL_EVENT_NOTIFIER_CLIENT_PRIMARY_TOUCH, active_panel,
+			&fts_ts_panel_notifier_callback, ts_data);
+
+	if (!cookie) {
+		pr_err("Failed to register for panel events\n");
+		return;
+	}
+
+	ts_data->notifier_cookie = cookie;
+}
+
+static void fts_ts_panel_notifier_callback(enum panel_event_notifier_tag tag,
+		 struct panel_event_notification *notification, void *client_data)
+{
+	struct fts_ts_data *ts_data = client_data;
+
+	if (!notification) {
+		pr_err("Invalid notification\n");
+		return;
+	}
+
+	FTS_DEBUG("Notification type:%d, early_trigger:%d",
+			notification->notif_type,
+			notification->notif_data.early_trigger);
+	switch (notification->notif_type) {
+	case DRM_PANEL_EVENT_UNBLANK:
+		if (notification->notif_data.early_trigger)
+			FTS_DEBUG("resume notification pre commit\n");
+		else
+			queue_work(fts_data->ts_workqueue, &fts_data->resume_work);
+		break;
+	case DRM_PANEL_EVENT_BLANK:
+		if (notification->notif_data.early_trigger) {
+			cancel_work_sync(&fts_data->resume_work);
+			fts_ts_suspend(ts_data->dev);
+		} else {
+			FTS_DEBUG("suspend notification post commit\n");
+		}
+		break;
+	case DRM_PANEL_EVENT_BLANK_LP:
+		FTS_DEBUG("received lp event\n");
+		break;
+	case DRM_PANEL_EVENT_FPS_CHANGE:
+		FTS_DEBUG("shashank:Received fps change old fps:%d new fps:%d\n",
+				notification->notif_data.old_fps,
+				notification->notif_data.new_fps);
+		break;
+	default:
+		FTS_DEBUG("notification serviced :%d\n",
+				notification->notif_type);
+		break;
+	}
+}
+#else
 static int drm_notifier_callback(struct notifier_block *self,
                                  unsigned long event, void *data)
 {
@@ -1720,6 +1963,8 @@ static int drm_notifier_callback(struct notifier_block *self,
 
     return 0;
 }
+#endif
+
 #else
 #ifndef FOCALTECH_CONFIG_PANEL_NOTIFICATIONS
 static int drm_notifier_callback(struct notifier_block *self,
@@ -1875,6 +2120,7 @@ static void fts_ts_late_resume(struct early_suspend *handler)
     queue_work(fts_data->ts_workqueue, &fts_data->resume_work);
 }
 #endif
+#endif //CONFIG_INPUT_TOUCHSCREEN_MMI
 
 #if FTS_USB_DETECT_EN
 static int fts_charger_notifier_callback(struct notifier_block *nb,
@@ -1923,6 +2169,14 @@ static int fts_ts_probe_entry(struct fts_ts_data *ts_data)
 
     FTS_FUNC_ENTER();
     FTS_INFO("%s", FTS_DRIVER_VERSION);
+
+#ifdef CONFIG_INPUT_TOUCHSCREEN_MMI
+    if (ts_data->spi->dev.of_node && !mmi_device_is_available(ts_data->spi->dev.of_node)) {
+        FTS_ERROR("mmi: device not supported\n");
+        return -ENODEV;
+    }
+#endif
+
     ts_data->pdata = kzalloc(pdata_size, GFP_KERNEL);
     if (!ts_data->pdata) {
         FTS_ERROR("allocate memory for platform_data fail");
@@ -1934,6 +2188,7 @@ static int fts_ts_probe_entry(struct fts_ts_data *ts_data)
         if (ret)
             FTS_ERROR("device-tree parse fail");
 
+#ifndef CONFIG_INPUT_TOUCHSCREEN_MMI
 #if defined(CONFIG_DRM)
 #if defined(CONFIG_DRM_PANEL)
         ret = drm_check_dt(ts_data->dev->of_node);
@@ -1941,6 +2196,7 @@ static int fts_ts_probe_entry(struct fts_ts_data *ts_data)
             FTS_ERROR("parse drm-panel fail");
             return -ENODEV;
         }
+#endif
 #endif
 #endif
     } else {
@@ -2061,24 +2317,32 @@ static int fts_ts_probe_entry(struct fts_ts_data *ts_data)
     if (ret) {
         FTS_ERROR("init fw upgrade fail");
     }
-
+#ifndef CONFIG_INPUT_TOUCHSCREEN_MMI
     if (ts_data->ts_workqueue) {
         INIT_WORK(&ts_data->resume_work, fts_resume_work);
     }
+#endif
 
 #if defined(CONFIG_PM) && FTS_PATCH_COMERR_PM
     init_completion(&ts_data->pm_completion);
     ts_data->pm_suspend = false;
 #endif
 
+#ifndef CONFIG_INPUT_TOUCHSCREEN_MMI
 #if defined(CONFIG_DRM)
-    ts_data->fb_notif.notifier_call = drm_notifier_callback;
+#ifndef CONFIG_FOCALTECH_DRM_PANEL_EVENT_NOTIFICATIONS
+	ts_data->fb_notif.notifier_call = drm_notifier_callback;
+#endif
 #if defined(CONFIG_DRM_PANEL)
+#ifdef CONFIG_FOCALTECH_DRM_PANEL_EVENT_NOTIFICATIONS
+	fts_ts_register_for_panel_events(ts_data->dev->of_node, ts_data);
+#else
     if (active_panel) {
         ret = drm_panel_notifier_register(active_panel, &ts_data->fb_notif);
         if (ret)
             FTS_ERROR("[DRM]drm_panel_notifier_register fail: %d\n", ret);
     }
+#endif
 #else
 #ifndef FOCALTECH_CONFIG_PANEL_NOTIFICATIONS
     ret = msm_drm_register_client(&ts_data->fb_notif);
@@ -2104,6 +2368,7 @@ static int fts_ts_probe_entry(struct fts_ts_data *ts_data)
     ts_data->early_suspend.resume = fts_ts_late_resume;
     register_early_suspend(&ts_data->early_suspend);
 #endif
+#endif //CONFIG_INPUT_TOUCHSCREEN_MMI
 
 #if FTS_USB_DETECT_EN
 	ts_data->usb_connected = 0x00;
@@ -2113,6 +2378,10 @@ static int fts_ts_probe_entry(struct fts_ts_data *ts_data)
 		FTS_ERROR("Unable to register charger_notifier: %d\n",ret);
 		goto err_register_charger_notify_failed;
 	}
+#endif
+
+#ifdef CONFIG_INPUT_TOUCHSCREEN_MMI
+    fts_mmi_dev_register(ts_data);
 #endif
 
     FTS_FUNC_EXIT();
@@ -2161,6 +2430,10 @@ static int fts_ts_remove_entry(struct fts_ts_data *ts_data)
 {
     FTS_FUNC_ENTER();
 
+#ifdef CONFIG_INPUT_TOUCHSCREEN_MMI
+    fts_mmi_dev_unregister(ts_data);
+#endif
+
     cancel_work_sync(&fts_data->resume_work);
 
 #if FTS_USB_DETECT_EN
@@ -2198,10 +2471,17 @@ static int fts_ts_remove_entry(struct fts_ts_data *ts_data)
     if (ts_data->ts_workqueue)
         destroy_workqueue(ts_data->ts_workqueue);
 
+#ifndef CONFIG_INPUT_TOUCHSCREEN_MMI
 #if defined(CONFIG_DRM)
 #if defined(CONFIG_DRM_PANEL)
+#ifdef CONFIG_FOCALTECH_DRM_PANEL_EVENT_NOTIFICATIONS
+    if (active_panel && ts_data->notifier_cookie)
+		panel_event_notifier_unregister(ts_data->notifier_cookie);
+#else
     if (active_panel)
         drm_panel_notifier_unregister(active_panel, &ts_data->fb_notif);
+#endif
+
 #else
     if (msm_drm_unregister_client(&ts_data->fb_notif))
         FTS_ERROR("[DRM]Error occurred while unregistering fb_notifier.\n");
@@ -2212,6 +2492,7 @@ static int fts_ts_remove_entry(struct fts_ts_data *ts_data)
 #elif defined(CONFIG_HAS_EARLYSUSPEND)
     unregister_early_suspend(&ts_data->early_suspend);
 #endif
+#endif //CONFIG_INPUT_TOUCHSCREEN_MMI
 
     if (gpio_is_valid(ts_data->pdata->reset_gpio))
         gpio_free(ts_data->pdata->reset_gpio);
@@ -2236,6 +2517,7 @@ static int fts_ts_remove_entry(struct fts_ts_data *ts_data)
     return 0;
 }
 
+#ifndef CONFIG_INPUT_TOUCHSCREEN_MMI
 static int fts_ts_suspend(struct device *dev)
 {
     int ret = 0;
@@ -2346,6 +2628,9 @@ static int fts_ts_resume(struct device *dev)
     fts_pinctrl_select_normal(ts_data);
 #endif
 
+#if defined(CONFIG_FTS_MULTI_FW)
+    fts_enter_normal_fw();
+#endif
     fts_wait_tp_to_valid();
     fts_ex_mode_recovery(ts_data);
 
@@ -2383,6 +2668,7 @@ static int fts_ts_resume(struct device *dev)
 
     return 0;
 }
+#endif
 
 #if defined(CONFIG_PM) && FTS_PATCH_COMERR_PM
 static int fts_pm_suspend(struct device *dev)
@@ -2418,8 +2704,14 @@ static int fts_ts_probe(struct spi_device *spi)
 {
     int ret = 0;
     struct fts_ts_data *ts_data = NULL;
+#ifdef CONFIG_FTS_SPI_CS_DELAY
+    struct spi_geni_qcom_ctrl_data *spi_param = NULL;
+#endif
 
     FTS_INFO("Touch Screen(SPI BUS) driver prboe...");
+#if defined(CONFIG_INPUT_FOCALTECH_0FLASH_MMI_IC_NAME_FT8725)
+	spi->chip_select = 0;
+#endif
     spi->mode = SPI_MODE_0;
     spi->bits_per_word = 8;
     ret = spi_setup(spi);
@@ -2435,6 +2727,15 @@ static int fts_ts_probe(struct spi_device *spi)
         return -ENOMEM;
     }
 
+#ifdef CONFIG_FTS_SPI_CS_DELAY
+    spi_param = devm_kzalloc(&spi->dev, sizeof(spi_param), GFP_KERNEL);
+    if(spi_param == NULL) {
+        FTS_ERROR("devm_kzalloc for spi_param failed!");
+        ret = -ENOMEM;
+        goto err_malloc_spi_param;
+    }
+#endif
+
     fts_data = ts_data;
     ts_data->spi = spi;
     ts_data->dev = &spi->dev;
@@ -2442,6 +2743,12 @@ static int fts_ts_probe(struct spi_device *spi)
 
     ts_data->bus_type = BUS_TYPE_SPI_V2;
     spi_set_drvdata(spi, ts_data);
+
+#ifdef CONFIG_FTS_SPI_CS_DELAY
+    /* Initialize the driver data */
+    spi_param->spi_cs_clk_delay = 1;
+    spi->controller_data = spi_param;
+#endif
 
     ret = fts_ts_probe_entry(ts_data);
     if (ret) {
@@ -2452,6 +2759,15 @@ static int fts_ts_probe(struct spi_device *spi)
 
     FTS_INFO("Touch Screen(SPI BUS) driver prboe successfully");
     return 0;
+
+#ifdef CONFIG_FTS_SPI_CS_DELAY
+err_malloc_spi_param:
+    if (ts_data) {
+        kfree(ts_data);
+        ts_data = NULL;
+    }
+    return ret;
+#endif
 }
 
 static int fts_ts_remove(struct spi_device *spi)

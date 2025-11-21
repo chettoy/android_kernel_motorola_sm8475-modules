@@ -137,11 +137,28 @@ static int ts_mmi_panel_event_handle(struct ts_mmi_dev *touch_cdev, enum ts_mmi_
 		break;
 
 	case TS_MMI_EVENT_PRE_DISPLAY_ON:
+#ifdef CONFIG_TOUCHSCREEN_EARLY_RESET_ON_RESUME
+		if (NEED_TO_SET_POWER) {
+			/* powering on early */
+			TRY_TO_CALL(power, TS_MMI_POWER_ON);
+			dev_dbg(DEV_MMI, "%s: touch powered on\n", __func__);
+		} else {
+			dev_info(DEV_MMI, "%s: ts_mmi_panel_on\n", __func__);
+			ts_mmi_panel_on(touch_cdev);
+		}
+#else
 		ts_mmi_power_on(touch_cdev);
+#endif
 		break;
 
 	case TS_MMI_EVENT_DISPLAY_ON:
+#ifdef CONFIG_TOUCHSCREEN_EARLY_RESET_ON_RESUME
+		if (NEED_TO_SET_POWER) {
+			ts_mmi_panel_on(touch_cdev);
+		}
+#else
 		ts_mmi_panel_on(touch_cdev);
+#endif
 		break;
 
 	default:
@@ -344,8 +361,10 @@ static void ts_mmi_queued_resume(struct ts_mmi_dev *touch_cdev)
 			TRY_TO_CALL(drv_irq, TS_MMI_IRQ_ON);
 	}
 
+#ifndef CONFIG_TOUCHCLASS_MMI_IRQ_ON_ONCE
 	if (IS_DEEPSLEEP_MODE)
 		TRY_TO_CALL(drv_irq, TS_MMI_IRQ_ON);
+#endif
 
 	TRY_TO_CALL(post_resume);
 

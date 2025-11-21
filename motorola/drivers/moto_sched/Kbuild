@@ -1,15 +1,21 @@
-# add -Wall to try to catch everything we can.
-ifeq ($(VERSION).$(PATCHLEVEL), 6.1)
-HAVE_KERNEL_6_1 := 1
+ifeq ($(ANDROID_BUILD_TOP),)
+ANDROID_BUILD_TOP := $(srctree)/..
 endif
 
+# add -Wall to try to catch everything we can.
 EXTRA_CFLAGS += -Wall
 EXTRA_CFLAGS += -I$(KERNEL_SRC)/../sm8475-modules/motorola/include
 EXTRA_CFLAGS += -I$(KERNEL_SRC)
+ifneq ($strip($(LINUX_KERNEL_VERSION)),)
+EXTRA_CFLAGS += -I$(ANDROID_BUILD_TOP)/$(LINUX_KERNEL_VERSION)
+endif
 EXTRA_CFLAGS += -I$(KERNEL_SRC)/../sm8475-modules/motorola/drivers/moto_sched
 
-ifeq ($(HAVE_KERNEL_6_1),1)
-EXTRA_CFLAGS += -DCONFIG_KERNEL_6_1
+ifneq ($(filter m y,$(CONFIG_MTK_SCHED_VIP_TASK)),)
+EXTRA_CFLAGS += -I$(ANDROID_BUILD_TOP)/kernel-6.1
+EXTRA_CFLAGS += -I$(ANDROID_BUILD_TOP)/kernel_device_modules-6.1
+CONFIG_MOTO_MUTEX_INHERIT := y
+CONFIG_MOTO_RWSEM_INHERIT := y
 endif
 
 obj-m += moto_sched.o
@@ -26,9 +32,15 @@ ifneq ($(filter m y,$(CONFIG_MOTO_FUTEX_INHERIT)),)
 	EXTRA_CFLAGS += -DCONFIG_MOTO_FUTEX_INHERIT
 endif
 
+ifneq ($(filter m y,$(CONFIG_MOTO_ENABLE_MDPF)),)
+	EXTRA_CFLAGS += -DCONFIG_MOTO_ENABLE_MDPF
+endif
+
 moto_sched-y := msched_main.o msched_sysfs.o msched_common.o
 
 moto_sched-y += locking/locking_main.o
 moto_sched-$(CONFIG_MOTO_MUTEX_INHERIT) += locking/mutex.o
 moto_sched-$(CONFIG_MOTO_RWSEM_INHERIT) += locking/rwsem.o
 moto_sched-$(CONFIG_MOTO_FUTEX_INHERIT) += locking/futex.o
+moto_sched-y += msched_uclamp.o
+moto_sched-$(CONFIG_MOTO_ENABLE_MDPF) += mdpf/mdpf_sysfs.o

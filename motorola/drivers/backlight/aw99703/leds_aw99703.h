@@ -10,6 +10,10 @@
 #define KERNEL_ABOVE_4_14
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+#define KERNEL_ABOVE_6_6
+#endif
+
 /********************************************
  * Register List
  *******************************************/
@@ -216,7 +220,10 @@ const unsigned char aw99703_reg_access[AW99703_REG_MAX] = {
 
 enum backlight_exp_current_align {
 	ALIGN_NONE,
-	ALIGN_OLED
+	ALIGN_BL_MAPPING_450,
+	ALIGN_BL_MAPPING_1000,
+	ALIGN_BL_MAPPING_GAMMA15,
+	ALIGN_BL_MAPPING_1050_29MA
 };
 
 struct aw99703_data {
@@ -237,6 +244,8 @@ struct aw99703_data {
 	unsigned int  pwm_mode;
 	unsigned int  map_type;
 	bool using_lsb;
+	bool skip_first_trans;
+	bool reset_trans_delay;
 	bool bl_reconfig_enable;
 	char panel_info[16];
 	unsigned int bl_slow_reg;

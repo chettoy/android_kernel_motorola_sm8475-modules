@@ -15,10 +15,15 @@ focaltech_v2_mmi-objs += focaltech_point_report_check.o
 focaltech_v2_mmi-objs += focaltech_flash.o
 focaltech_v2_mmi-objs += focaltech_flash/focaltech_upgrade_ft3518u.o
 focaltech_v2_mmi-objs += focaltech_flash/focaltech_upgrade_ft5452i.o
+focaltech_v2_mmi-objs += focaltech_flash/focaltech_upgrade_ft3519t.o
 focaltech_v2_mmi-objs += focaltech_i2c.o
 
 ifneq ($(filter ft3519,$(CONFIG_INPUT_FOCALTECH_0FLASH_MMI_IC_NAME)),)
 	EXTRA_CFLAGS += -DCONFIG_INPUT_FOCALTECH_0FLASH_MMI_IC_NAME_FT3519
+endif
+
+ifneq ($(filter ft3519t,$(CONFIG_INPUT_FOCALTECH_0FLASH_MMI_IC_NAME)),)
+	EXTRA_CFLAGS += -DCONFIG_INPUT_FOCALTECH_0FLASH_MMI_IC_NAME_FT3519t
 endif
 
 ifneq ($(filter m y,$(CONFIG_INPUT_TOUCHSCREEN_MMI)),)
@@ -32,9 +37,27 @@ endif
 ifneq ($(filter m y,$(CONFIG_INPUT_FOCALTECH_MMI_ENABLE_PALM)),)
 	EXTRA_CFLAGS += -DFOCALTECH_PALM_SENSOR_EN
 endif
+ifneq ($(filter m y, $(PICOLEAF_DATA_FOR_TOUCH)),)
+	EXTRA_CFLAGS += -DPICOLEAF_DATA_EN
+endif
+ifneq ($(filter m y, $(NDT_DATA_FOR_TOUCH)),)
+	EXTRA_CFLAGS += -DNDT_DATA_EN
+endif
 ifneq ($(filter m y,$(CONFIG_INPUT_FOCALTECH_MMI_PEN_NOTIFIER)),)
 	KBUILD_EXTRA_SYMBOLS += $(CURDIR)/$(KBUILD_EXTMOD)/../../../misc/pen/Module.symvers
 	EXTRA_CFLAGS += -DFOCALTECH_PEN_NOTIFIER
+endif
+
+ifneq ($(filter m y, $(CONFIG_DRM_PANEL_EVENT_NOTIFICATIONS)),)
+	EXTRA_CFLAGS += -DCONFIG_DRM_PANEL_EVENT_NOTIFICATIONS
+endif
+
+ifneq ($(filter m y,$(CONFIG_ENABLE_FTS_PALM_CANCEL)),)
+    EXTRA_CFLAGS += -DCONFIG_ENABLE_FTS_PALM_CANCEL
+endif
+
+ifneq ($(filter m y,$(CONFIG_ENABLE_RESOLITION_BOOST)),)
+    EXTRA_CFLAGS += -DCONFIG_ENABLE_RESOLITION_BOOST
 endif
 
 ifneq ($(filter m y, $(CONFIG_DRM_PANEL_NOTIFICATIONS)),)

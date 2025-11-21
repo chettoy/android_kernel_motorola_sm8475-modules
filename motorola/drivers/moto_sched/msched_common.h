@@ -25,8 +25,7 @@
 #include <linux/sched/walt.h>
 #endif
 
-#define VERION 1008
-// #define DEBUG_LOCK 1
+#define VERION 250630
 
 #define cond_trace_printk(cond, fmt, ...)	\
 do {										\
@@ -41,6 +40,11 @@ do {										\
 #define sched_debug(fmt, ...) \
 		pr_info("[moto_sched][%s]"fmt, __func__, ##__VA_ARGS__)
 
+#define DEBUG_BASE					(1 << 0)
+#define DEBUG_LOCK					(1 << 1)
+#define DEBUG_BINDER				(1 << 2)
+#define DEBUG_MDPF				(1 << 3)
+
 #define UX_ENABLE_BASE				(1 << 0)
 #define UX_ENABLE_INTERACTION		(1 << 1)
 #define UX_ENABLE_LOCK				(1 << 2)
@@ -49,6 +53,8 @@ do {										\
 #define UX_ENABLE_CAMERA			(1 << 5)
 #define UX_ENABLE_KSWAPD			(1 << 6)
 #define UX_ENABLE_BOOST				(1 << 7)
+#define UX_ENABLE_KERNEL			(1 << 8)
+#define UX_ENABLE_MDPF				(1 << 9)
 
 /* define for UX thread type, keep same as the define in java file */
 #define UX_TYPE_PERF_DAEMON			(1 << 0)
@@ -72,6 +78,10 @@ do {										\
 #define UX_TYPE_SERVICEMANAGER		(1 << 18)
 #define UX_TYPE_INHERIT_LOCK		(1 << 19)
 #define UX_TYPE_CAMERAAPP			(1 << 20)
+#define UX_TYPE_KERNEL				(1 << 21)
+#define UX_TYPE_IO_PRIO_1			(1 << 22)
+#define UX_TYPE_IO_PRIO_2			(1 << 23)
+#define UX_TYPE_MDPF				(1 << 24)
 
 /* define for UX scene type, keep same as the define in java file */
 #define UX_SCENE_LAUNCH				(1 << 0)
@@ -87,6 +97,7 @@ do {										\
 #define UX_PRIO_AUDIO		80
 #define UX_PRIO_ANIMATOR	79
 #define UX_PRIO_SYSTEM		78
+#define UX_PRIO_MDPF		71 // must be aligned with walt.h!
 #define UX_PRIO_TOPAPP		70 // must be aligned with walt.h!
 #define UX_PRIO_CAMERA		69
 #define UX_PRIO_KSWAPD		65 // must be aligned with walt.h!
@@ -107,28 +118,20 @@ enum {
 	CGROUP_NRS,
 };
 
-#ifdef CONFIG_MOTO_FUTEX_INHERIT
-struct locking_info {
-	struct task_struct *holder;
-	bool ux_contrib;
-};
-#endif
-
 /* Moto task struct */
 struct moto_task_struct {
 	int				ux_type;
 
-#ifdef CONFIG_MOTO_FUTEX_INHERIT
-	struct locking_info lkinfo;
-#endif
-
 	int				inherit_depth;
 	u64				inherit_start;
 
-#ifdef DEBUG_LOCK
-	u64				wait_start;
-	int             wait_prio;
-#endif
+	u64				boost_kernel_start;
+	int				boost_kernel_lock_depth;
+	char				cgr_type;
+
+	u16				uclamp[UCLAMP_CNT];
+	u16				uclamp_pi[UCLAMP_CNT];
+	bool				uclamp_active;
 };
 
 /* global vars and functions */
@@ -136,13 +139,17 @@ extern int __read_mostly moto_sched_enabled;
 extern int __read_mostly moto_sched_debug;
 extern int __read_mostly moto_sched_scene;
 extern int __read_mostly moto_boost_prio;
+extern int __read_mostly moto_boost_task_util;
 extern pid_t __read_mostly global_systemserver_tgid;
 extern pid_t __read_mostly global_launcher_tgid;
 extern pid_t __read_mostly global_sysui_tgid;
 extern pid_t __read_mostly global_sf_tgid;
 extern pid_t __read_mostly global_audioapp_tgid;
 extern pid_t __read_mostly global_camera_tgid;
+extern atomic_t __read_mostly global_boost_pid;
 
+extern void task_ux_type_set(int pid, int ux_type);
+extern void task_ux_type_clear(int pid, int ux_type);
 extern int task_get_origin_mvp_prio(struct task_struct *p, bool with_inherit);
 extern int task_get_mvp_prio(struct task_struct *p, bool with_inherit);
 extern unsigned int task_get_mvp_limit(struct task_struct *p, int mvp_prio);
@@ -152,7 +159,12 @@ extern void binder_ux_type_set(struct task_struct *task);
 extern void queue_ux_task(struct rq *rq, struct task_struct *task, int enqueue);
 extern bool lock_inherit_ux_type(struct task_struct *owner, struct task_struct *waiter, char* lock_name);
 extern bool lock_clear_inherited_ux_type(struct task_struct *waiter, char* lock_name);
+extern void lock_protect_update_starttime(struct task_struct *tsk, unsigned long settime_jiffies, char* lock_name, void* pointer);
 extern void register_vendor_comm_hooks(void);
+
+static inline bool is_debuggable(int type) {
+	return (moto_sched_debug & type) != 0;
+}
 
 static inline bool is_enabled(int type) {
 	return (moto_sched_enabled & type) != 0;
@@ -160,6 +172,21 @@ static inline bool is_enabled(int type) {
 
 static inline bool is_scene(int scene) {
 	return (moto_sched_scene & scene) != 0;
+}
+
+static inline bool is_heavy_scene(void) {
+	return (is_enabled(UX_ENABLE_INTERACTION) && is_scene(UX_SCENE_LAUNCH|UX_SCENE_TOUCH))
+			|| (is_enabled(UX_ENABLE_BOOST) && is_scene(UX_SCENE_BOOST));
+}
+
+static inline unsigned long moto_task_util(struct task_struct *p)
+{
+#if IS_ENABLED(CONFIG_SCHED_WALT)
+	struct walt_task_struct *wts = (struct walt_task_struct *) p->android_vendor_data1;
+	return wts->demand_scaled;
+#else
+	return READ_ONCE(p->se.avg.util_avg);
+#endif
 }
 
 static inline struct moto_task_struct *get_moto_task_struct(struct task_struct *p)

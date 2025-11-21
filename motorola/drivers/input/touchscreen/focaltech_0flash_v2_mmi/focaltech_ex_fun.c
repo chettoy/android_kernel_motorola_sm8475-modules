@@ -1295,7 +1295,9 @@ static ssize_t doreflash_store(struct device *dev,
     fwname[count - 1] = '\0';
 
     mutex_lock(&input_dev->mutex);
+#ifndef CONFIG_FTS_MULTI_FW
     fts_fw_update_vendor_name(fwname);
+#endif
     fts_fw_recovery();
     mutex_unlock(&input_dev->mutex);
     fts_data->force_reflash = false;
@@ -1668,6 +1670,7 @@ static struct attribute_group fts_attribute_group = {
 #include <linux/major.h>
 #include <linux/kdev_t.h>
 
+#ifndef CONFIG_INPUT_TOUCHSCREEN_MMI
 /* Attribute: path (RO) */
 static ssize_t path_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
@@ -1777,10 +1780,12 @@ static struct device_attribute touchscreen_attributes[] = {
 	__ATTR(debug_level_en, S_IRUGO | S_IWUSR | S_IWGRP, debug_level_en_show, debug_level_en_store),
 	__ATTR_NULL
 };
+#endif
 
 #define TSDEV_MINOR_BASE 128
 #define TSDEV_MINOR_MAX 32
 
+#ifndef CONFIG_INPUT_TOUCHSCREEN_MMI
 static int fts_sysfs_class(void *_data, bool create)
 {
 	struct fts_ts_data *data = _data;
@@ -1851,6 +1856,7 @@ device_destroy:
 
 	return -ENODEV;
 }
+#endif
 
 int fts_create_sysfs(struct fts_ts_data *ts_data)
 {
@@ -1865,12 +1871,14 @@ int fts_create_sysfs(struct fts_ts_data *ts_data)
         FTS_INFO("[EX]: sysfs_create_group() succeeded!!");
     }
 
+#ifndef CONFIG_INPUT_TOUCHSCREEN_MMI
     ret = fts_sysfs_class(ts_data, true);
     if (ret) {
         FTS_ERROR("[EX]: fts_sysfs_class() failed!!");
         sysfs_remove_group(&ts_data->dev->kobj, &fts_attribute_group);
         return -ENOMEM;
     }
+#endif
 
     return ret;
 }

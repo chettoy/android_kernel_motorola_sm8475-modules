@@ -983,6 +983,13 @@ static int goodix_parse_dt(struct device_node *node,
 		board_data->avdd_gpio = r;
 	}
 
+	if (of_property_read_bool(node, "goodix,avdd-set")) {
+		ts_info("goodix,avdd-set");
+		board_data->avdd_set = true;
+	} else {
+		board_data->avdd_set = false;
+	}
+
 	r = of_get_named_gpio(node, "goodix,iovdd-gpio", 0);
 	if (r < 0) {
 		ts_info("can't find iovdd-gpio, use other power supply");
@@ -990,6 +997,15 @@ static int goodix_parse_dt(struct device_node *node,
 	} else {
 		ts_info("get iovdd-gpio[%d] from dt", r);
 		board_data->iovdd_gpio = r;
+	}
+
+	r = of_get_named_gpio(node, "goodix,iovdden-gpio", 0);
+	if (r < 0) {
+		ts_info("can't find iovdd-gpio, use other power supply");
+		board_data->iovdden_gpio = 0;
+	} else {
+		ts_info("get iovdd-gpio[%d] from dt", r);
+		board_data->iovdden_gpio = r;
 	}
 
 	r = of_get_named_gpio(node, "goodix,reset-gpio", 0);
@@ -1162,6 +1178,12 @@ static int goodix_parse_dt(struct device_node *node,
 		board_data->gesture_wait_pm = false;
 	}
 
+	if (of_property_read_bool(node, "goodix,fw-upgrade-drv")) {
+		ts_info("fw_upgrade_drv");
+		board_data->fw_upgrade_drv = true;
+	} else {
+		board_data->fw_upgrade_drv = false;
+	}
 	return 0;
 }
 #endif
@@ -1229,15 +1251,15 @@ static void goodix_ts_report_finger(struct input_dev *dev,
 
 	mutex_lock(&dev->mutex);
 
-#ifdef CONFIG_ENABLE_GTP_PALM_CANCEL
-	tool_type = touch_data->palm_on ? MT_TOOL_PALM : MT_TOOL_FINGER;
-#endif
 	for (i = 0; i < GOODIX_MAX_TOUCH; i++) {
+#ifdef CONFIG_ENABLE_GTP_PALM_CANCEL
+		tool_type = touch_data->palm_on ? MT_TOOL_PALM : MT_TOOL_FINGER;
+#endif
 		if (touch_data->coords[i].status == TS_TOUCH) {
 #if defined(CONFIG_MOTO_DDA_PASSIVESTYLUS) || defined(CONFIG_ENABLE_GTP_PALM_CANCEL_BY_ID)
-			ts_debug("report: id %d, x %d, y %d, w %d, palm %d", i,
+			ts_debug("report: id %d, x %d, y %d, w %d, palm %d, tool_type %d", i,
 				touch_data->coords[i].x, touch_data->coords[i].y,
-				touch_data->coords[i].w, touch_data->coords[i].plam_status);
+				touch_data->coords[i].w, touch_data->coords[i].plam_status, tool_type);
 #else
 			ts_debug("report: id %d, x %d, y %d, w %d", i,
 				touch_data->coords[i].x, touch_data->coords[i].y,
@@ -1481,7 +1503,10 @@ static int goodix_ts_power_init(struct goodix_ts_core *core_data)
 			ts_err("set avdd load fail");
 			return ret;
 		}
-		ret = regulator_set_voltage(core_data->avdd, 3000000, 3000000);
+		if (ts_bdata->avdd_set)
+			ret = regulator_set_voltage(core_data->avdd, 3300000, 3300000);
+		else
+			ret = regulator_set_voltage(core_data->avdd, 3000000, 3000000);
 		if (ret) {
 			ts_err("set avdd voltage fail");
 			return ret;
@@ -1519,8 +1544,10 @@ int goodix_ts_power_on(struct goodix_ts_core *cd)
 		return 0;
 
 	ret = cd->hw_ops->power_on(cd, true);
-	if (!ret)
+	if (!ret) {
 		cd->power_on = 1;
+		cd->start_time = ktime_get();
+	}
 	else
 		ts_err("failed power on, %d", ret);
 	return ret;
@@ -1695,6 +1722,15 @@ static int goodix_ts_gpio_setup(struct goodix_ts_core *core_data)
 				GPIOF_OUT_INIT_LOW, "ts_iovdd_gpio");
 		if (r < 0) {
 			ts_err("Failed to request iovdd-gpio, r:%d", r);
+			return r;
+		}
+	}
+
+	if (ts_bdata->iovdden_gpio > 0) {
+		r = devm_gpio_request_one(&core_data->pdev->dev, ts_bdata->iovdden_gpio,
+				GPIOF_OUT_INIT_LOW, "ts_iovdden_gpio");
+		if (r < 0) {
+			ts_err("Failed to request iovdden-gpio, r:%d", r);
 			return r;
 		}
 	}
@@ -2307,7 +2343,7 @@ void set_pen_mode_boot(struct goodix_ts_core *cd)
 	else if (value == PEN_DETECTION_PULL)
 		cd->gtp_pen_detect_flag = GTP_PEN_MODE;
 
-	mutex_lock_interruptible(&cd->mode_lock);
+	ret = mutex_lock_interruptible(&cd->mode_lock);
 	if (cd->power_on == 0) {
 		ts_err("The touch is in sleep state, restore the value when resume\n");
 		goto exit;
@@ -2449,6 +2485,14 @@ static int goodix_later_init_thread(void *data)
 			UPDATE_MODE_BLOCK | UPDATE_MODE_SRC_REQUEST);
 	if (ret)
 		ts_err("failed do fw update");
+#else
+	if (cd->board_data.fw_upgrade_drv) {
+		ts_info("upgrade fw by drv");
+		ret = goodix_do_fw_update(cd->ic_configs[CONFIG_TYPE_NORMAL],
+				UPDATE_MODE_BLOCK | UPDATE_MODE_SRC_REQUEST);
+		if (ret)
+			ts_err("failed do fw update");
+	}
 #endif
 	/* setp3: get fw version and ic_info
 	 * at this step we believe that the ic is in normal mode,
@@ -2554,7 +2598,7 @@ static int pen_notifier_callback(struct notifier_block *self,
 		cd->get_mode.stylus_mode = GTP_PEN_MODE;
 	}
 
-	mutex_lock_interruptible(&cd->mode_lock);
+	ret = mutex_lock_interruptible(&cd->mode_lock);
 
 	if (cd->power_on == 0) {
 		ts_err("The touch is in sleep state, restore the value when resume\n");

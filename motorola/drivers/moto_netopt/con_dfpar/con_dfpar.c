@@ -37,7 +37,9 @@
 #include <linux/proc_fs.h>
 #include <linux/suspend.h>
 #include <trace/events/power.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 245))
 #include <linux/cred.h>
+#endif
 
 #define PROC_NUMBUF 13
 
@@ -77,20 +79,16 @@ static void detect_packet_owner(struct sk_buff *skb)
 	}
 
 	sk = skb_to_full_sk(skb);
-	if (!sk) {
-		pr_info("sock is null\n");
+	if (!sk || !sk_fullsock(sk) || !refcount_inc_not_zero(&sk->sk_refcnt)) {
 		return;
 	}
-	if (sk && !refcount_inc_not_zero(&sk->sk_refcnt)) {
-		pr_info("sock refcnt is zero\n");
-		return;
-	}
+
 	uid = sk->sk_uid.val;
 	if (!uid) {
-		pr_info("uid is null\n");
 		goto release_sock;
 	}
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 245))
 	rcu_read_lock();
 	for_each_process(task) {
 		const struct cred *cred = get_task_cred(task);
@@ -102,6 +100,14 @@ static void detect_packet_owner(struct sk_buff *skb)
 		put_cred(cred);
 	}
 	rcu_read_unlock();
+#else
+	for_each_process(task) {
+		if (task->cred->uid.val == uid) {
+			pr_info("Packet Info: UID: %d, name: %s\n", uid, task->comm);
+			break;
+		}
+	}
+#endif
 
 release_sock:
 	sock_put(sk);
@@ -249,26 +255,26 @@ static struct nf_hook_ops con_dfpar_hook_ops[] __read_mostly = {
 		.hook		= con_dfpar_ip4_in_hook,
 		.pf		= NFPROTO_IPV4,
 		.hooknum	= NF_INET_LOCAL_IN,
-		.priority	= NF_IP_PRI_RAW_BEFORE_DEFRAG + 1,
+		.priority	= NF_IP_PRI_FIRST,
 	},
 	{
 		.hook		= con_dfpar_ip6_in_hook,
 		.pf		= NFPROTO_IPV6,
 		.hooknum	= NF_INET_LOCAL_IN,
-		.priority	= NF_IP6_PRI_RAW_BEFORE_DEFRAG + 1,
+		.priority	= NF_IP6_PRI_FIRST,
 	},
 #ifdef TRACK_OUT_PACKET
 	{
 		.hook		= con_dfpar_ip4_out_hook,
 		.pf		= NFPROTO_IPV4,
 		.hooknum	= NF_INET_LOCAL_OUT,
-		.priority	= NF_IP_PRI_RAW_BEFORE_DEFRAG + 1,
+		.priority	= NF_IP_PRI_FIRST,
 	},
 	{
 		.hook		= con_dfpar_ip6_out_hook,
 		.pf		= NFPROTO_IPV6,
 		.hooknum	= NF_INET_LOCAL_OUT,
-		.priority	= NF_IP6_PRI_RAW_BEFORE_DEFRAG + 1,
+		.priority	= NF_IP6_PRI_FIRST,
 	},
 #endif
 };

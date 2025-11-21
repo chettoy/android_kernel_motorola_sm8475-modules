@@ -2,7 +2,7 @@ DLKM_DIR := motorola/kernel/modules
 LOCAL_PATH := $(call my-dir)
 
 ifeq ($(TOUCHSCREEN_GOODIX_BRL_SPI),true)
-ifeq ($(call is-board-platform-in-list,taro kalama parrot crow pineapple), true)
+ifeq ($(call is-board-platform-in-list,taro kalama parrot crow pineapple sun), true)
     KBUILD_OPTIONS += CONFIG_TOUCHSCREEN_GOODIX_BRL_SPI=y
 else
     KERNEL_CFLAGS += CONFIG_TOUCHSCREEN_GOODIX_BRL_SPI=y
@@ -25,10 +25,15 @@ ifeq ($(ENABLE_GTP_PALM_CANCEL),true)
     KBUILD_OPTIONS += CONFIG_ENABLE_GTP_PALM_CANCEL=y
 endif
 
+ifeq ($(ENABLE_GTP_MANUAL_CS),true)
+    KBUILD_OPTIONS += CONFIG_GTP_MANUAL_CS=y
+endif
+
 include $(CLEAR_VARS)
 LOCAL_MODULE := goodix_gt96x_mmi.ko
 LOCAL_MODULE_TAGS := optional
 LOCAL_MODULE_PATH := $(KERNEL_MODULES_OUT)
+LOCAL_ADDITIONAL_DEPENDENCIES += $(KERNEL_MODULES_OUT)/mmi_info.ko
 ifneq ($(findstring touchscreen_mmi.ko,$(BOARD_VENDOR_KERNEL_MODULES)),)
     KBUILD_OPTIONS += CONFIG_INPUT_TOUCHSCREEN_MMI=y
     LOCAL_ADDITIONAL_DEPENDENCIES += $(KERNEL_MODULES_OUT)/touchscreen_mmi.ko

@@ -12,8 +12,10 @@
 #define KERNEL_ABOVE_4_14
 #endif
 
-#undef pr_debug
-#define pr_debug pr_info
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+#define KERNEL_ABOVE_6_6
+#endif
+
 
 /*********************************************************
  *
@@ -53,6 +55,27 @@
 
 #define RESET_CONDITION_BITS	 (BIT_CH3_FAULT | BIT_CH2_FAULT | BIT_CH1_FAULT | BIT_OVP | BIT_OCP)
 
+/********************************************
+ * Register Access
+ *******************************************/
+#define KTD3136_REG_ACCESS_MAX				0x20
+#define REG_NONE_ACCESS					0
+#define REG_RD_ACCESS					(1 << 0)
+#define REG_WR_ACCESS					(1 << 1)
+
+const unsigned char ktd3136_reg_access[] = {
+	[REG_DEV_ID] = REG_RD_ACCESS,
+	[REG_SW_RESET] = REG_RD_ACCESS,
+	[REG_MODE] = REG_RD_ACCESS,
+	[REG_CONTROL] = REG_RD_ACCESS,
+	[REG_RATIO_LSB] = REG_RD_ACCESS|REG_WR_ACCESS,
+	[REG_RATIO_MSB] = REG_RD_ACCESS|REG_WR_ACCESS,
+	[REG_PWM] = REG_RD_ACCESS|REG_WR_ACCESS,
+	[REG_RAMP_ON] = REG_RD_ACCESS|REG_WR_ACCESS,
+	[REG_TRANS_RAMP] = REG_RD_ACCESS|REG_WR_ACCESS,
+	[REG_FLASH_SETTING] = REG_RD_ACCESS,
+	[REG_STATUS] = REG_RD_ACCESS,
+};
 
 int ktd3136_brightness_table_reg4[256] = {0x01,0x02,0x04,0x04,0x07,0x02,0x00,0x06,0x04,0x02,0x03,0x04,0x05,0x06,0x02,0x06,0x02,
 			0x06,0x02,0x06,0x02,0x06,0x02,0x04,0x05,0x06,0x05,0x03,0x00,0x05,0x02,0x06,0x02,0x06,0x02,0x06,0x02,0x06,0x02,0x06,
@@ -80,6 +103,14 @@ int ktd3136_brightness_table_reg5[256] = {0x00,0x06,0x0C,0x11,0x15,0x1A,0x1E,0x2
 			0xF8,0xF8,0xF9,0xF9,0xF9,0xF9,0xFA,0xFA,0xFA,0xFA,0xFB,0xFB,0xFB,0xFB,0xFC,0xFC,0xFC,0xFC,0xFD,0xFD,0xFD,0xFD,0xFE,
 			0xFE,0xFE,0xFE,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 
+enum backlight_exp_current_align {
+	ALIGN_NONE,
+	ALIGN_BL_MAPPING_450,
+	ALIGN_BL_MAPPING_1000,
+	ALIGN_BL_MAPPING_GAMMA15,
+	ALIGN_BL_MAPPING_1050_29MA
+};
+
 struct ktd3136_data {
 	struct led_classdev led_dev;
 	struct i2c_client *client;
@@ -99,7 +130,12 @@ struct ktd3136_data {
 	u16 *brt_code_table;
 	int hwen_gpio;
 	bool pwm_mode;
+	unsigned int map_type;
+	unsigned int led_current_align;
+	unsigned int reg_ctrl_val;
 	bool using_lsb;
+	bool skip_first_trans;
+	bool reset_trans_delay;
 	unsigned int pwm_period;
 	unsigned int full_scale_led;
 	unsigned int ramp_on_time;
@@ -114,6 +150,7 @@ struct ktd3136_data {
 	unsigned int induct_current;
 	unsigned int flash_current;
 	unsigned int flash_timeout;
+	unsigned int pwm_hysteresis;
 
 };
 
