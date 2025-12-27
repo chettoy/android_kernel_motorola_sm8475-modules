@@ -1012,9 +1012,15 @@ int ts_mmi_dev_register(struct device *parent,
 	}
 	dev_info(DEV_TS, "class entry name %s\n", class_fname);
 
+#ifndef CONFIG_TOUCHSCREEN_DEVICE_VIRTUAL_PATH
 	DEV_MMI = device_create(touchscreens_class,
 		parent, touch_cdev->class_dev_no,
 		touch_cdev, "%s", class_fname);
+#else
+	DEV_MMI = device_create(touchscreens_class,
+		NULL, touch_cdev->class_dev_no,
+		touch_cdev, "%s", class_fname);
+#endif
 	if (IS_ERR(DEV_MMI)) {
 		ret = PTR_ERR(DEV_MMI);
 		goto CLASS_DEVICE_CREATE_FAILED;
@@ -1218,7 +1224,11 @@ static int __init touchscreens_init(void)
 		pr_info("touchscreen_class: moto touchscreen already exist!\n");
 		return 0;
 	}
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,6,0)
+	touchscreens_class = class_create("touchscreen");
+#else
 	touchscreens_class = class_create(THIS_MODULE, "touchscreen");
+#endif
 	if (IS_ERR(touchscreens_class)) {
 		error = PTR_ERR(touchscreens_class);
 		touchscreens_class = NULL;

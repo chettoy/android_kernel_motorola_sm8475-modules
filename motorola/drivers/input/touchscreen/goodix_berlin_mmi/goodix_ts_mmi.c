@@ -47,6 +47,10 @@ static ssize_t goodix_ts_stylus_mode_show(struct device *dev,
 		struct device_attribute *attr, char *buf);
 static ssize_t goodix_ts_sensitivity_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t size);
+#ifdef CONFIG_GTP_HARDWARE_STATUS
+static ssize_t goodix_ts_hardware_status_show(struct device *dev,
+		struct device_attribute *attr, char *buf);
+#endif
 #ifdef CONFIG_GTP_LAST_TIME
 static ssize_t goodix_ts_timestamp_show(struct device *dev,
 		struct device_attribute *attr, char *buf);
@@ -73,6 +77,12 @@ static ssize_t goodix_ts_pitch_show(struct device *dev,
 static ssize_t goodix_ts_pitch_store(struct device *dev,
 			struct device_attribute *attr, const char *buf, size_t size);
 
+#ifdef CONFIG_GTP_STYLUS_VSYNC
+static ssize_t goodix_ts_vsync_show(struct device *dev,
+	struct device_attribute *attr, char *buf);
+static ssize_t goodix_ts_vsync_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t size);
+#endif
 #ifdef CONFIG_ENABLE_GTP_VIRTUAL_FOD
 static ssize_t goodix_ts_fp_event_show(struct device *dev,
 	struct device_attribute *attr, char *buf);
@@ -88,6 +98,9 @@ static DEVICE_ATTR(stylus_mode, (S_IRUGO | S_IWUSR | S_IWGRP),
 	goodix_ts_stylus_mode_show, goodix_ts_stylus_mode_store);
 static DEVICE_ATTR(sensitivity, (S_IRUGO | S_IWUSR | S_IWGRP),
 	NULL, goodix_ts_sensitivity_store);
+#ifdef CONFIG_GTP_HARDWARE_STATUS
+static DEVICE_ATTR(hardware_status, S_IRUGO, goodix_ts_hardware_status_show, NULL);
+#endif
 #ifdef CONFIG_GTP_LAST_TIME
 static DEVICE_ATTR(timestamp, S_IRUGO, goodix_ts_timestamp_show, NULL);
 #endif
@@ -104,6 +117,10 @@ static DEVICE_ATTR(pocket_mode, (S_IRUGO | S_IWUSR | S_IWGRP),
 static DEVICE_ATTR(pitch, (S_IRUGO | S_IWUSR | S_IWGRP),
 	goodix_ts_pitch_show, goodix_ts_pitch_store);
 
+#ifdef CONFIG_GTP_STYLUS_VSYNC
+static DEVICE_ATTR(vsync, (S_IRUGO | S_IWUSR | S_IWGRP),
+	goodix_ts_vsync_show, goodix_ts_vsync_store);
+#endif
 #ifdef CONFIG_ENABLE_GTP_VIRTUAL_FOD
 static DEVICE_ATTR(fp_event, (S_IRUGO | S_IWUSR | S_IWGRP),
 	goodix_ts_fp_event_show, NULL);
@@ -163,12 +180,18 @@ static int goodix_ts_mmi_extend_attribute_group(struct device *dev, struct attri
 
 	if (core_data->board_data.stowed_mode_ctrl)
 		ADD_ATTR(stowed);
-
+#ifdef CONFIG_GTP_HARDWARE_STATUS
+	ADD_ATTR(hardware_status);
+#endif
 	if (core_data->board_data.pocket_mode_ctrl)
 		ADD_ATTR(pocket_mode);
 
 	if (core_data->board_data.pitch_ctrl)
 		ADD_ATTR(pitch);
+
+#ifdef CONFIG_GTP_STYLUS_VSYNC
+	ADD_ATTR(vsync);
+#endif
 
 #ifdef CONFIG_ENABLE_GTP_VIRTUAL_FOD
 		ADD_ATTR(fp_event);
@@ -518,12 +541,12 @@ static int goodix_ts_mmi_set_report_rate(struct goodix_ts_core *core_data)
 
 	core_data->set_mode.report_rate_mode = mode;
 
-	ts_info("Success to set %s\n", mode == REPORT_RATE_CMD_240HZ ? "REPORT_RATE_240HZ" :
-				(mode == REPORT_RATE_CMD_360HZ ? "REPORT_RATE_360HZ" :
+	ts_info("Success to set %s\n", mode == REPORT_RATE_CMD_240HZ ? "REPORT_RATE_220/240HZ" :
+				(mode == REPORT_RATE_CMD_360HZ ? "REPORT_RATE_300/360HZ" :
 				(mode == REPORT_RATE_CMD_480HZ ? "REPORT_RATE_480HZ" :
 				(mode == REPORT_RATE_CMD_576HZ ? "REPORT_RATE_576HZ" :
 				(mode == REPORT_RATE_CMD_720HZ ? "REPORT_RATE_720HZ" :
-				(mode == REPORT_RATE_CMD_120HZ ? "REPORT_RATE_120HZ" :
+				(mode == REPORT_RATE_CMD_120HZ ? "REPORT_RATE_120/130HZ" :
 				"Unsupported"))))));
 
 	return ret;
@@ -851,6 +874,97 @@ exit:
 	mutex_unlock(&core_data->mode_lock);
 	return size;
 }
+
+#ifdef CONFIG_GTP_STYLUS_VSYNC
+static ssize_t goodix_ts_vsync_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct platform_device *pdev;
+	struct goodix_ts_core *core_data;
+
+	dev = MMI_DEV_TO_TS_DEV(dev);
+	GET_GOODIX_DATA(dev);
+
+	ts_info("Vsync mode state = 0x%02x.\n", core_data->set_mode.vsync_mode);
+	return scnprintf(buf, PAGE_SIZE, "0x%02x\n", core_data->set_mode.vsync_mode);
+}
+
+static ssize_t goodix_ts_vsync_store(struct device *dev,
+			struct device_attribute *attr, const char *buf, size_t size)
+{
+	int ret = 0;
+	unsigned int args[2] = { 0 };
+	struct platform_device *pdev;
+	struct goodix_ts_core *core_data;
+
+	dev = MMI_DEV_TO_TS_DEV(dev);
+	GET_GOODIX_DATA(dev);
+
+	mutex_lock(&core_data->mode_lock);
+	ret = sscanf(buf, "%d %d", &args[0], &args[1]);
+	if (ret < 0) {
+		ts_err("pitch mode: Failed to convert value\n");
+		mutex_unlock(&core_data->mode_lock);
+		return -EINVAL;
+	}
+	switch (args[0]) {
+		case 30:
+			ts_info("touch default cfg value\n");
+			core_data->get_mode.vsync_mode = 0x00;
+			break;
+		case 31:
+			ts_info("touch enter vsync mode\n");
+			core_data->get_mode.vsync_mode = 0x01;
+			break;
+		default:
+			ts_info("unsupport vsync mode type, value = %u\n", args[0]);
+			mutex_unlock(&core_data->mode_lock);
+			return -EINVAL;
+	}
+
+	if (core_data->set_mode.vsync_mode == core_data->get_mode.vsync_mode) {
+		ts_info("The value = 0x%02x is same, so not to write", core_data->get_mode.vsync_mode);
+		goto exit;
+	}
+
+	if (core_data->power_on == 0) {
+		ts_info("The touch is in sleep state, restore the value when resume\n");
+		goto exit;
+	}
+
+	ret = goodix_ts_send_cmd(core_data, VSYNC_SWITCH_CMD, 5,
+		core_data->get_mode.vsync_mode , 0x00);
+	if (ret < 0) {
+		ts_err("failed to send vsync mode cmd");
+		goto exit;
+	}
+
+	core_data->set_mode.vsync_mode = core_data->get_mode.vsync_mode;
+	msleep(20);
+
+	ts_info("Success to set vsync mode = 0x%02x", core_data->get_mode.vsync_mode);
+exit:
+	mutex_unlock(&core_data->mode_lock);
+	return size;
+}
+#endif
+
+#ifdef CONFIG_GTP_HARDWARE_STATUS
+static ssize_t goodix_ts_hardware_status_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct platform_device *pdev;
+	struct goodix_ts_core *core_data;
+	u8 hardware_status = 0;
+
+	dev = MMI_DEV_TO_TS_DEV(dev);
+	GET_GOODIX_DATA(dev);
+
+	hardware_status = core_data->open_status;
+	ts_info("Read touch hardware status = %d.\n", hardware_status);
+	return scnprintf(buf, PAGE_SIZE, "0x%02x", hardware_status);
+}
+#endif
 
 #ifdef CONFIG_ENABLE_GTP_VIRTUAL_FOD
 static ssize_t goodix_ts_fp_event_show(struct device *dev,
@@ -1205,8 +1319,11 @@ static int goodix_ts_firmware_update(struct device *dev, char *fwname) {
 	if (core_data->set_fw_name)
 		core_data->set_fw_name(fwname);
 
-	ret = goodix_do_fw_update(core_data->ic_configs[CONFIG_TYPE_NORMAL],
-				UPDATE_MODE_SRC_REQUEST | UPDATE_MODE_BLOCK | UPDATE_MODE_FORCE);
+	if (false == core_data->board_data.fw_upgrade_drv) {
+		ts_info("upgrade fw by sh");
+		ret = goodix_do_fw_update(core_data->ic_configs[CONFIG_TYPE_NORMAL],
+					UPDATE_MODE_SRC_REQUEST | UPDATE_MODE_BLOCK | UPDATE_MODE_FORCE);
+	}
 	if (ret)
 		ts_err("failed do fw update");
 
@@ -1233,13 +1350,13 @@ static int goodix_ts_mmi_methods_power(struct device *dev, int on) {
 static int goodix_ts_mmi_charger_mode(struct device *dev, int mode)
 {
 	int ret = 0;
-	int timeout = 50;
+	int timeout = 100;
 	struct platform_device *pdev;
 	struct goodix_ts_core *core_data;
 
 	GET_GOODIX_DATA(dev);
 
-	/* 5000ms timeout */
+	/* 10s timeout */
 	while (core_data->init_stage < CORE_INIT_STAGE2 && timeout--)
 		msleep(100);
 
@@ -1380,6 +1497,7 @@ static int goodix_ts_mmi_panel_state(struct device *dev,
 static int goodix_ts_mmi_pre_resume(struct device *dev) {
 	struct platform_device *pdev;
 	struct goodix_ts_core *core_data;
+	int spend_time;
 
 	ts_info("Resume start");
 	GET_GOODIX_DATA(dev);
@@ -1389,6 +1507,15 @@ static int goodix_ts_mmi_pre_resume(struct device *dev) {
 	if (core_data->gesture_enabled) {
 		core_data->hw_ops->irq_enable(core_data, false);
 		disable_irq_wake(core_data->irq);
+	} else {
+		core_data->end_time = ktime_get();
+		spend_time = ktime_to_ms(ktime_sub(core_data->end_time, core_data->start_time));
+		ts_info("spend_time after power on: %dms", spend_time);
+		if ((spend_time > 0) && (spend_time < GOODIX_NORMAL_RESET_DELAY_MS)) {
+			msleep(GOODIX_NORMAL_RESET_DELAY_MS - spend_time);
+			core_data->end_time = 0;
+			core_data->start_time = 0;
+		}
 	}
 
 	return 0;
@@ -1486,6 +1613,17 @@ static int goodix_ts_mmi_post_resume(struct device *dev) {
 			ts_info("Success to set pitch mode = 0x%02x", core_data->get_mode.pitch_mode);
 		}
 	}
+
+#ifdef CONFIG_GTP_STYLUS_VSYNC
+	if (core_data->get_mode.vsync_mode) {
+		ret = goodix_ts_send_cmd(core_data, VSYNC_SWITCH_CMD, 5, core_data->get_mode.vsync_mode, 0);
+		if (!ret) {
+			core_data->set_mode.vsync_mode = core_data->get_mode.vsync_mode;
+			msleep(20);
+			ts_info("Success to set vsync mode = 0x%02x", core_data->get_mode.vsync_mode);
+		}
+	}
+#endif
 
 	if (core_data->get_mode.liquid_detection) {
 		ret = goodix_ts_send_cmd(core_data, LIQUID_DETECTION_SWITCH_CMD, 5,

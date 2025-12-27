@@ -11,14 +11,31 @@
  * GNU General Public License for more details.
  */
 
+#define pr_fmt(fmt) "moto_sched: " fmt
+
 #include <linux/sched.h>
 #include <linux/sched/task.h>
 #include <linux/proc_fs.h>
 #include <linux/uaccess.h>
 #include <linux/seq_file.h>
+#include <linux/version.h>
 
 #include "msched_sysfs.h"
 #include "msched_common.h"
+
+#if IS_ENABLED(CONFIG_MTK_SCHED_VIP_TASK)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+#include <linux/sched/cputime.h>
+#include <kernel/sched/sched.h>
+#include <drivers/misc/mediatek/sched/common.h>
+#else
+#include <drivers/misc/mediatek/sched/sched_mtk.h>
+#endif
+#endif
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0) && LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0))
+#include <linux/ioprio.h>
+#endif
 
 #define MOTO_SCHED_PROC_DIR		"moto_sched"
 
@@ -28,6 +45,7 @@ int __read_mostly moto_sched_enabled;
 int __read_mostly moto_sched_debug;
 int __read_mostly moto_sched_scene;
 int __read_mostly moto_boost_prio = 119;
+int __read_mostly moto_boost_task_util = 100;
 pid_t __read_mostly global_systemserver_tgid = -1;
 pid_t __read_mostly global_launcher_tgid = -1;
 pid_t __read_mostly global_sysui_tgid = -1;
@@ -36,6 +54,15 @@ pid_t __read_mostly global_audioapp_tgid = -1;
 pid_t __read_mostly global_camera_tgid = -1; 	// Moto Camera only!
 
 pid_t global_task_pid_to_read = -1;
+
+atomic_t __read_mostly global_boost_pid = ATOMIC_INIT(-1);
+
+
+EXPORT_SYMBOL(moto_sched_scene);
+EXPORT_SYMBOL(global_launcher_tgid);
+EXPORT_SYMBOL(global_sysui_tgid);
+
+
 
 struct proc_dir_entry *d_moto_sched;
 
@@ -47,6 +74,15 @@ enum {
 };
 
 #if IS_ENABLED(CONFIG_SCHED_WALT)
+static struct msched_ops sched_ops = {
+	.task_get_mvp_prio	= task_get_mvp_prio,
+	.task_get_mvp_limit	= task_get_mvp_limit,
+	.binder_inherit_ux_type = binder_inherit_ux_type,
+	.binder_clear_inherited_ux_type = binder_clear_inherited_ux_type,
+	.binder_ux_type_set = binder_ux_type_set,
+	.queue_ux_task = queue_ux_task
+};
+#elif IS_ENABLED(CONFIG_MTK_SCHED_VIP_TASK)
 static struct msched_ops sched_ops = {
 	.task_get_mvp_prio	= task_get_mvp_prio,
 	.task_get_mvp_limit	= task_get_mvp_limit,
@@ -81,6 +117,9 @@ static ssize_t proc_enabled_write(struct file *file, const char __user *buf,
 #if IS_ENABLED(CONFIG_SCHED_WALT)
 	set_moto_sched_enabled(moto_sched_enabled);
 	set_moto_sched_ops(moto_sched_enabled? &sched_ops : NULL);
+#elif IS_ENABLED(CONFIG_MTK_SCHED_VIP_TASK)
+	set_moto_sched_enabled(moto_sched_enabled);
+	set_moto_sched_ops(moto_sched_enabled? &sched_ops : NULL);
 #endif
 
 	return count;
@@ -92,7 +131,7 @@ static ssize_t proc_enabled_read(struct file *file, char __user *buf,
 	char buffer[128];
 	size_t len = 0;
 
-	len = snprintf(buffer, sizeof(buffer), "0x%x base=%d interaction=%d lock=%d binder=%d audio=%d camera=%d kswapd=%d boost=%d\n",
+	len = snprintf(buffer, sizeof(buffer), "0x%x base=%d interaction=%d lock=%d binder=%d audio=%d camera=%d kswapd=%d boost=%d kernel=%d mdpf=%d\n",
 			moto_sched_enabled,
 			is_enabled(UX_ENABLE_BASE),
 			is_enabled(UX_ENABLE_INTERACTION),
@@ -101,7 +140,9 @@ static ssize_t proc_enabled_read(struct file *file, char __user *buf,
 			is_enabled(UX_ENABLE_AUDIO),
 			is_enabled(UX_ENABLE_CAMERA),
 			is_enabled(UX_ENABLE_KSWAPD),
-			is_enabled(UX_ENABLE_BOOST));
+			is_enabled(UX_ENABLE_BOOST),
+			is_enabled(UX_ENABLE_KERNEL),
+			is_enabled(UX_ENABLE_MDPF));
 
 	return simple_read_from_buffer(buf, count, ppos, buffer, len);
 }
@@ -121,7 +162,7 @@ static ssize_t proc_debug_write(struct file *file, const char __user *buf,
 		return -EFAULT;
 
 	buffer[count] = '\0';
-	err = kstrtoint(strstrip(buffer), 10, &val);
+	err = kstrtoint(strstrip(buffer), 16, &val);
 	if (err)
 		return err;
 
@@ -133,10 +174,16 @@ static ssize_t proc_debug_write(struct file *file, const char __user *buf,
 static ssize_t proc_debug_read(struct file *file, char __user *buf,
 		size_t count, loff_t *ppos)
 {
-	char buffer[13];
+	char buffer[128];
 	size_t len = 0;
 
 	len = snprintf(buffer, sizeof(buffer), "%d\n", moto_sched_debug);
+	len = snprintf(buffer, sizeof(buffer), "0x%x base=%d lock=%d binder=%d mdpf=%d \n",
+			moto_sched_debug,
+			is_debuggable(DEBUG_BASE),
+			is_debuggable(DEBUG_LOCK),
+			is_debuggable(DEBUG_BINDER),
+			is_debuggable(DEBUG_MDPF));
 
 	return simple_read_from_buffer(buf, count, ppos, buffer, len);
 }
@@ -194,13 +241,11 @@ static ssize_t proc_ux_task_write(struct file *file, const char __user *buf,
 {
 	char buffer[MAX_SET];
 	char *str, *token;
-	char opt_str[OPT_STR_MAX][8] = {"0", "0", "0"};
+	char opt_str[OPT_STR_MAX][9] = {"0", "0", "0"};
 	int cnt = 0;
 	int pid = 0;
 	int ux_type = 0;
 	int err = 0;
-	struct task_struct *ux_task = NULL;
-	static DEFINE_MUTEX(ux_mutex);
 
 	memset(buffer, 0, sizeof(buffer));
 
@@ -236,32 +281,7 @@ static ssize_t proc_ux_task_write(struct file *file, const char __user *buf,
 		if (err || ux_type <= 0)
 			return err;
 
-		mutex_lock(&ux_mutex);
-		rcu_read_lock();
-		ux_task = find_task_by_vpid(pid);
-		if (ux_task)
-			get_task_struct(ux_task);
-		rcu_read_unlock();
-
-		if (ux_task) {
-			if (ux_type & UX_TYPE_PERF_DAEMON) {
-				// perf daemon is in systemserver, so use its tgid.
-				global_systemserver_tgid = ux_task->tgid;
-			} else if (ux_type & UX_TYPE_LAUNCHER) {
-				global_launcher_tgid = ux_task->tgid;
-			} else if (ux_type & UX_TYPE_SYSUI) {
-				global_sysui_tgid = ux_task->tgid;
-			} else if (ux_type & UX_TYPE_SF) {
-				global_sf_tgid = ux_task->tgid;
-			} else if (ux_type & UX_TYPE_AUDIOAPP) {
-				global_audioapp_tgid = ux_task->tgid;
-			} else if (ux_type & UX_TYPE_CAMERAAPP) {
-				global_camera_tgid = ux_task->tgid;
-			}
-			task_add_ux_type(ux_task, ux_type);
-			put_task_struct(ux_task);
-		}
-		mutex_unlock(&ux_mutex);
+		task_ux_type_set(pid, ux_type);
 
 	// clear pid state
 	} else if (!strncmp(opt_str[OPT_STR_TYPE], "c", 1) && cnt == OPT_STR_MAX) {
@@ -269,23 +289,7 @@ static ssize_t proc_ux_task_write(struct file *file, const char __user *buf,
 		if (err || ux_type < 0)
 			return err;
 
-		mutex_lock(&ux_mutex);
-		rcu_read_lock();
-		ux_task = find_task_by_vpid(pid);
-		if (ux_task)
-			get_task_struct(ux_task);
-		rcu_read_unlock();
-
-		if (ux_task) {
-			if (ux_type & UX_TYPE_AUDIOAPP && global_audioapp_tgid == ux_task->tgid) {
-				global_audioapp_tgid = -1;
-			} else if (ux_type & UX_TYPE_CAMERAAPP) {
-				global_camera_tgid = -1;
-			}
-			task_clr_ux_type(ux_task, ux_type);
-			put_task_struct(ux_task);
-		}
-		mutex_unlock(&ux_mutex);
+		task_ux_type_clear(pid, ux_type);
 	} else {
 		return -EFAULT;
 	}
@@ -354,6 +358,102 @@ static ssize_t proc_boost_prio_read(struct file *file, char __user *buf,
 	return simple_read_from_buffer(buf, count, ppos, buffer, len);
 }
 
+static ssize_t proc_boost_task_util_write(struct file *file, const char __user *buf,
+		size_t count, loff_t *ppos)
+{
+	char buffer[13];
+	int err, val;
+	static DEFINE_MUTEX(boost_task_util_mutex);
+
+	memset(buffer, 0, sizeof(buffer));
+
+	if (count > sizeof(buffer) - 1)
+		count = sizeof(buffer) - 1;
+
+	if (copy_from_user(buffer, buf, count))
+		return -EFAULT;
+
+	buffer[count] = '\0';
+	err = kstrtoint(strstrip(buffer), 10, &val);
+	if (err)
+		return err;
+
+	mutex_lock(&boost_task_util_mutex);
+	moto_boost_task_util = val;
+	mutex_unlock(&boost_task_util_mutex);
+	return count;
+}
+
+static ssize_t proc_boost_task_util_read(struct file *file, char __user *buf,
+		size_t count, loff_t *ppos)
+{
+	char buffer[13];
+	size_t len = 0;
+
+	len = snprintf(buffer, sizeof(buffer), "%d\n", moto_boost_task_util);
+
+	return simple_read_from_buffer(buf, count, ppos, buffer, len);
+}
+
+static ssize_t proc_boost_pid_write(struct file *file, const char __user *buf,
+		size_t count, loff_t *ppos)
+{
+	char buffer[13];
+	int err, val;
+
+	memset(buffer, 0, sizeof(buffer));
+
+	if (count > sizeof(buffer) - 1)
+		count = sizeof(buffer) - 1;
+
+	if (copy_from_user(buffer, buf, count))
+		return -EFAULT;
+
+	buffer[count] = '\0';
+	err = kstrtoint(strstrip(buffer), 10, &val);
+	if (err)
+		return err;
+
+	atomic_set(&global_boost_pid, val);
+	return count;
+}
+
+static ssize_t proc_boost_pid_read(struct file *file, char __user *buf,
+		size_t count, loff_t *ppos)
+{
+	char buffer[13];
+	size_t len = 0;
+
+	len = snprintf(buffer, sizeof(buffer), "%d\n", atomic_read(&global_boost_pid));
+
+	return simple_read_from_buffer(buf, count, ppos, buffer, len);
+}
+
+static ssize_t all_ux_tasks_read(struct file *file, char __user *buf,
+		size_t count, loff_t *ppos)
+{
+	char buffer[32];
+    struct task_struct *p, *t;
+	int ux_type = 0;
+	int ux_count = 0;
+	size_t len = 0;
+
+    rcu_read_lock();
+    for_each_process(p) {
+        for_each_thread(p, t) {
+			ux_type = task_get_ux_type(t);
+			if (ux_type > 0) {
+				pr_info("%d:%d %s prio=%d ux_type=0x%x\n", t->tgid, t->pid, t->comm, t->prio, ux_type);
+				ux_count++;
+			}
+        }
+    }
+	rcu_read_unlock();
+
+	len = snprintf(buffer, sizeof(buffer), "total: %d\n", ux_count);
+	return simple_read_from_buffer(buf, count, ppos, buffer, len);
+}
+
 static ssize_t proc_version_read(struct file *file, char __user *buf,
 		size_t count, loff_t *ppos)
 {
@@ -388,6 +488,20 @@ static const struct proc_ops proc_ux_task_fops = {
 static const struct proc_ops proc_boost_prio_fops = {
 	.proc_write		= proc_boost_prio_write,
 	.proc_read		= proc_boost_prio_read,
+};
+
+static const struct proc_ops proc_boost_task_util_fops = {
+	.proc_write		= proc_boost_task_util_write,
+	.proc_read		= proc_boost_task_util_read,
+};
+
+static const struct proc_ops proc_boost_pid_fops = {
+	.proc_write		= proc_boost_pid_write,
+	.proc_read		= proc_boost_pid_read,
+};
+
+static const struct proc_ops all_ux_tasks_fops = {
+	.proc_read		= all_ux_tasks_read,
 };
 
 static const struct proc_ops proc_version_fops = {
@@ -428,6 +542,12 @@ int moto_sched_proc_init(void)
 		goto err_creat_boost_prio;
 	}
 
+	proc_node = proc_create("boost_task_util", 0666, d_moto_sched, &proc_boost_task_util_fops);
+	if (!proc_node) {
+		sched_err("failed to create proc node boost_task_util\n");
+		goto err_creat_boost_task_util;
+	}
+
 	proc_node = proc_create("version", 0444, d_moto_sched, &proc_version_fops);
 	if (!proc_node) {
 		sched_err("failed to create proc node version\n");
@@ -440,12 +560,33 @@ int moto_sched_proc_init(void)
 		goto err_creat_debug;
 	}
 
+	proc_node = proc_create("boost_pid", 0666, d_moto_sched, &proc_boost_pid_fops);
+	if (!proc_node) {
+		sched_err("failed to create proc node boost_pid\n");
+		goto err_creat_boost_pid;
+	}
+
+	proc_node = proc_create("all_ux_tasks", 0444, d_moto_sched, &all_ux_tasks_fops);
+	if (!proc_node) {
+		sched_err("failed to create proc node all_ux_tasks\n");
+		goto err_create_all_ux_tasks;
+	}
+
 	return 0;
+
+err_create_all_ux_tasks:
+	remove_proc_entry("boost_pid", d_moto_sched);
+
+err_creat_boost_pid:
+	remove_proc_entry("debug", d_moto_sched);
 
 err_creat_debug:
 	remove_proc_entry("version", d_moto_sched);
 
 err_create_version:
+	remove_proc_entry("boost_task_util", d_moto_sched);
+
+err_creat_boost_task_util:
 	remove_proc_entry("boost_prio", d_moto_sched);
 
 err_creat_boost_prio:
@@ -466,8 +607,11 @@ err_creat_d_moto_sched:
 
 void moto_sched_proc_deinit(void)
 {
+	remove_proc_entry("all_ux_tasks", d_moto_sched);
+	remove_proc_entry("boost_pid", d_moto_sched);
 	remove_proc_entry("debug", d_moto_sched);
 	remove_proc_entry("version", d_moto_sched);
+	remove_proc_entry("boost_task_util", d_moto_sched);
 	remove_proc_entry("boost_prio", d_moto_sched);
 	remove_proc_entry("ux_task", d_moto_sched);
 	remove_proc_entry("ux_scene", d_moto_sched);

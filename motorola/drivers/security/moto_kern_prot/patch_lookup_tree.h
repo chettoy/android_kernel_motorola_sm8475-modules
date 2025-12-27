@@ -33,14 +33,14 @@
 #ifndef JUMP_TABLE_LOOKUP_H
 #define JUMP_TABLE_LOOKUP_H
 
-#include <linux/dma-mapping.h>
+#include <linux/of_address.h>
 
 /* Used to determine the branch direction */
 #define JUMP_TREE_BRANCH(x) ((x >> ((sizeof(x) * 8) - 1)) & 1)
 
 union jump_tree_node {
 	uint32_t je_index[2];
-	uint64_t je_ptr;
+	uint64_t je_val;
 };
 
 static union jump_tree_node *jet; /* Start of jump table lookup */
@@ -49,7 +49,7 @@ static union jump_tree_node *jet_end; /* End of jump table lookup */
 
 void init_jtn(union jump_tree_node *jtn)
 {
-	jtn->je_ptr = 0;
+	jtn->je_val = 0;
 }
 
 /**
@@ -93,7 +93,7 @@ int add_branch(unsigned long *cur_code_ptr, union jump_tree_node *cur_node,
 	bool bit;
 
 	if (!cur_code_ptr || !cur_node)
-		return -EACCES;
+		return -EINVAL;
 
 	bit = JUMP_TREE_BRANCH(*cur_code_ptr);
 	*cur_code_ptr <<= 1;
@@ -117,16 +117,22 @@ int add_trunk(union jump_tree_node *cur_node, struct jump_entry *je,
 	       unsigned long cur_code_ptr, int i)
 {
 	if (!cur_node || !je)
-		return -EACCES;
+		return -EINVAL;
 
 	for (; i < sizeof(cur_code_ptr) * 8; i++) {
 		if (add_branch(&cur_code_ptr, cur_node, jet_ind))
-			return -EACCES;
+			return -EINVAL;
 		jet_extend();
 		cur_node = jet + jet_ind;
 		jet_ind++;
 	}
-	cur_node->je_ptr = (uint64_t)je;
+
+	/*
+	 * GKI rips aarch64_insn_gen_branch_imm out for the illusion of security
+	 * while leaving jump_labels as a whole intact, this is a partial
+	 * duplicate of that function
+	 */
+	cur_node->je_val = (jump_entry_target(je) - jump_entry_code(je)) >> 2;
 
 	return 0;
 }
@@ -203,7 +209,6 @@ uint64_t jet_alloc(struct jump_entry *je_start, struct jump_entry *je_end,
 	}
 
 	*jet_size_out = jet_end - jet;
-
 	return (uint64_t)jet;
 }
 

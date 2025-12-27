@@ -58,7 +58,10 @@
 #define SX937X_I2C_WATCHDOG_TIME 10000
 #define SX937X_I2C_WATCHDOG_TIME_ERR 2000
 
-#define MAX_CHANNEL_NUMBER 8
+/* when we hold a channel ,the value will reach to max value 1073740800
+this is read from  phx useful readback register 0X81F0 to 0X820C*/
+#define USEFUL_MAX_VALUE           1073740800
+
 static struct class *capsense_class;
 
 static void sx937x_reinitialize(psx93XX_t this);
@@ -334,29 +337,67 @@ static int sx937x_global_variable_init(psx93XX_t this)
 static int manual_offset_calibration(psx937x_platform_data_t data)
 {
 	int ret = 0;
-	ret = sx937x_i2c_write_16bit(data->bus, SX937X_COMMAND, 0xE);
+	int temp = 0;
+	int i = 0;
+	LOG_INFO("manual_offset_calibration\n");
+	sx937x_i2c_read_16bit(data->bus, SX937X_GENERAL_SETUP, &temp);
+	temp = temp & 0x000000FF;
+	if(data->default_reg_num >0)
+	{
+		LOG_INFO(" manual_offset_calibration default_reg_num >0\n");
+		for (i = 0; i < data->default_reg_num; i++)
+		{
+			if (data->default_setup_reg[i].reg == SX937X_GENERAL_SETUP)
+			{
+				data->default_setup_reg[i].val = data->default_setup_reg[i].val & 0xFFFFFF00;
+				data->default_setup_reg[i].val = data->default_setup_reg[i].val | temp;
+			}
+			sx937x_i2c_write_16bit(data->bus, data->default_setup_reg[i].reg,data->default_setup_reg[i].val);
+			LOG_INFO("sx937 load default 0x8024 reg config download %s params set Reg 0x%x Value: 0x%x\n",
+				data->dbg_name,data->default_setup_reg[i].reg,data->default_setup_reg[i].val);
+		}
+	}
+	else {
+		ret = sx937x_i2c_write_16bit(data->bus, SX937X_COMMAND, 0xE);
+	}
 	return ret;
 
 }
+static void smtc_get_ph_prox_state(u32 prox_reg_val, PROX_STATE ph_state[NUM_PHASES])
+{
+	int ph;
+	struct _buttonInfo *btn_info = NULL;
 
+	for (ph=0; ph<NUM_PHASES; ph++)
+	{
+		btn_info = &psmtcButtons[ph];
+
+		if (prox_reg_val & btn_info->BodyMask){
+			ph_state[ph] = PROX_STATE_2;
+		}
+		else if (prox_reg_val & btn_info->ProxMask){
+			ph_state[ph] = PROX_STATE_1;
+		}
+		else{
+			ph_state[ph] = PROX_STATE_0;
+		}
+	}
+}
 //class node use
-static void read_dbg_raw(psx93XX_t this)
+static void read_dbg_raw(psx93XX_t this, PROX_STATE prox_state[NUM_PHASES])
 {
 	int ph;
 	u32 uData, ph_sel;
 	s32 ant_use, ant_raw;
 	s32 avg, diff;
 	u16 off;
-	s32 adc_min, adc_max, use_flt_dlt_var;
+	s32 uflt_dlt;
 	s32 ref_a_use=0, ref_b_use=0, ref_c_use=0;
 	int ref_ph_a, ref_ph_b, ref_ph_c;
 
 	ref_ph_a = this->hw->ref_phase_a;
 	ref_ph_b = this->hw->ref_phase_b;
 	ref_ph_c = this->hw->ref_phase_c;
-
-	sx937x_i2c_read_16bit(this->bus, SX937X_DEVICE_STATUS_A, &uData);
-	LOG_INFO("SX937X_STAT0_REG= 0x%X\n", uData);
 
 	if(ref_ph_a != -1)
 	{
@@ -376,14 +417,10 @@ static void read_dbg_raw(psx93XX_t this)
 
 	sx937x_i2c_read_16bit(this->bus, SX937X_DEBUG_SETUP, &ph_sel);
 
-	sx937x_i2c_read_16bit(this->bus, SX937X_DEBUG_READBACK_0, &uData);
-	adc_min = (s32)uData>>10;
-	sx937x_i2c_read_16bit(this->bus, SX937X_DEBUG_READBACK_1, &uData);
-	adc_max = (s32)uData>>10;
 	sx937x_i2c_read_16bit(this->bus, SX937X_DEBUG_READBACK_2, &uData);
 	ant_raw = (s32)uData>>10;
 	sx937x_i2c_read_16bit(this->bus, SX937X_DEBUG_READBACK_3, &uData);
-	use_flt_dlt_var = (s32)uData>>4;
+	uflt_dlt = (s32)uData>>4;
 
 	ph = (ph_sel >> 3) & 0x7;
 
@@ -396,10 +433,18 @@ static void read_dbg_raw(psx93XX_t this)
 	diff = (s32)uData>>10;
 	sx937x_i2c_read_16bit(this->bus, SX937X_OFFSET_PH0 + ph*4*3, &uData);
 	off = (u16)(uData & 0x3FFF);
-	//state = psmtcButtons[ph].state;
 
-	LOG_INFO("SMTC_DBG PH= %d USE= %d RAW= %d PH%d_USE= %d PH%d_USE= %d PH%d_USE= %d AVG= %d DIFF= %d OFF= %d ADC_MIN= %d ADC_MAX= %d DLT= %d SMTC_END\n",
-			ph, ant_use, ant_raw, ref_ph_a, ref_a_use,  ref_ph_b, ref_b_use, ref_ph_c, ref_c_use, avg,diff,off, adc_min,adc_max, use_flt_dlt_var);
+	LOG_INFO("SMTC_DBG PH= %d DIFF= %d STATE= %d PH%d_USE= %d PH%d_USE= %d PH%d_USE= %d USE= %d AVG= %d OFF= %d RAW= %d DLT= %d SMTC_END\n",
+			ph, diff, prox_state[ph], ref_ph_a, ref_a_use,  ref_ph_b, ref_b_use, ref_ph_c, ref_c_use, ant_use, avg, off, ant_raw, uflt_dlt);
+}
+
+static u32 smtc_off_to_dcap(u16 offset)
+{
+	u32 hig, low;
+
+	hig = (offset >> 7 & 0x7F) * 31000;
+	low = (offset & 0x7F) * 540;
+	return (hig + low)/100;
 }
 
 static void read_rawData(psx93XX_t this)
@@ -411,15 +456,18 @@ static void read_rawData(psx93XX_t this)
 	u32 use_hex, avg_hex, dif_hex, dlt_hex, dbg_ph;
 	u16 offset;
 	int ref_ph_a, ref_ph_b, ref_ph_c;
+	PROX_STATE prox_state[NUM_PHASES];
 
 	if(this)
 	{
 		ref_ph_a = this->hw->ref_phase_a;
 		ref_ph_b = this->hw->ref_phase_b;
 		ref_ph_c = this->hw->ref_phase_c;
-		LOG_INFO("[SX937x] ref_ph_a= %d ref_ph_b= %d ref_ph_c= %d\n", ref_ph_a, ref_ph_b, ref_ph_c);
+		LOG_DBG("[SX937x] ref_ph_a= %d ref_ph_b= %d ref_ph_c= %d\n", ref_ph_a, ref_ph_b, ref_ph_c);
 
 		sx937x_i2c_read_16bit(this->bus, SX937X_DEVICE_STATUS_A, &uData);
+		smtc_get_ph_prox_state(uData, prox_state);
+
 		sx937x_i2c_read_16bit(this->bus, SX937X_DEBUG_SETUP, &dbg_ph);
 		dbg_ph = (dbg_ph >> 3) & 0x7;
 		sx937x_i2c_read_16bit(this->bus, SX937X_DEBUG_READBACK_3, &dlt_hex);
@@ -452,16 +500,14 @@ static void read_rawData(psx93XX_t this)
 			sx937x_i2c_read_16bit(this->bus, SX937X_OFFSET_PH0 + index*3, &uData);
 			offset = (u16)(uData & 0x3FFF);
 
-			//state = this->hw->[csx].state;
+			LOG_INFO("SMTC_DAT PH= %d DIFF= %d STATE= %d PH%d_USE= %d PH%d_USE= %d PH%d_USE= %d USE= %d AVG= %d OFF= %d SMTC_END\n",
+					csx, diff, prox_state[csx], ref_ph_a, ref_a_use,  ref_ph_b, ref_b_use, ref_ph_c, ref_c_use, useful, average, offset);
 
-			LOG_INFO("SMTC_DAT PH= %d DIFF= %d USE= %d PH%d_USE= %d PH%d_USE= %d PH%d_USE= %d OFF= %d AVG= %d SMTC_END\n",
-					csx, diff, useful, ref_ph_a, ref_a_use, ref_ph_b, ref_b_use, ref_ph_c, ref_c_use, offset, average);
-
-			LOG_INFO("SMTC_HEX PH= %d USE= 0x%X AVG= 0x%X DIF= 0x%X PH%d_DLT= 0x%X SMTC_END\n",
+			LOG_DBG("SMTC_HEX PH= %d USE= 0x%X AVG= 0x%X DIF= 0x%X PH%d_DLT= 0x%X SMTC_END\n",
 					csx, use_hex, avg_hex, dif_hex, dbg_ph, dlt_hex);
 		}
 
-		read_dbg_raw(this);
+		read_dbg_raw(this, prox_state);
 	}
 }
 
@@ -499,6 +545,11 @@ static ssize_t capsense_reset_store(struct device *dev,
 
 	if (!strncmp(buf, "flip_near", 9)) {
 		LOG_INFO("%s sx937x capsense_reset_store msg: flip_near\n", this->hw->dbg_name);
+		if (this->hw->reinit_on_i2c_failure){
+			LOG_INFO("flip state close");
+			this->hw->state_flip_open = false;  //close
+		}
+
 		sx937x_i2c_read_16bit(this->bus, SX937X_GENERAL_SETUP, &temp);
 		temp = temp & 0x000000FF;
 		for (i = 0; i < this->hw->flip_reg_num; i++)
@@ -516,6 +567,11 @@ static ssize_t capsense_reset_store(struct device *dev,
 
 	if (!strncmp(buf, "flip_far", 8)) {
 		LOG_INFO("%s sx937x capsense_reset_store msg: flip_far\n", this->hw->dbg_name);
+		if (this->hw->reinit_on_i2c_failure){
+			LOG_INFO("flip state open");
+			this->hw->state_flip_open = true;  //open
+		}
+
 		sx937x_i2c_read_16bit(this->bus, SX937X_GENERAL_SETUP, &temp);
 		temp = temp & 0x000000FF;
 		if (this->hw->flip_far_reg_num > 0)
@@ -528,7 +584,7 @@ static ssize_t capsense_reset_store(struct device *dev,
 					this->hw->flip_far_reg[i].val = this->hw->flip_far_reg[i].val | temp;
 				}
 				sx937x_i2c_write_16bit(this->bus, this->hw->flip_far_reg[i].reg,this->hw->flip_far_reg[i].val);
-				LOG_INFO("sx937 flip near download %s params set Reg 0x%x Value: 0x%x\n",
+				LOG_INFO("sx937 flip far reg num >0  download %s params set Reg 0x%x Value: 0x%x\n",
 						this->hw->dbg_name,this->hw->flip_far_reg[i].reg,this->hw->flip_far_reg[i].val);
 			}
 		}
@@ -542,7 +598,7 @@ static ssize_t capsense_reset_store(struct device *dev,
 					this->hw->flip_far_reg[i].val = this->hw->flip_far_reg[i].val | temp;
 				}
 				sx937x_i2c_write_16bit(this->bus, this->hw->flip_far_reg[i].reg,this->hw->flip_far_reg[i].val);
-				LOG_INFO("sx937 flip near download %s params set Reg 0x%x Value: 0x%x\n",
+				LOG_INFO("sx937 flip far download %s params set Reg 0x%x Value: 0x%x\n",
 						this->hw->dbg_name,this->hw->flip_far_reg[i].reg,this->hw->flip_far_reg[i].val);
 			}
 		}
@@ -558,7 +614,7 @@ static ssize_t capsense_raw_data_show(struct device *dev,
 	char *p = buf;
 	int csx;
 	s32 useful, average, diff;
-	u32 uData;
+	u32 uData, dcap;
 	u16 offset;
 
 	psx93XX_t this = dev_get_drvdata(dev);
@@ -572,8 +628,10 @@ static ssize_t capsense_raw_data_show(struct device *dev,
 			diff = (s32)uData>>10;
 			sx937x_i2c_read_16bit(this->bus, SX937X_OFFSET_PH0 + csx*12, &uData);
 			offset = (u16)(uData & 0x3FFF);
-			p += snprintf(p, PAGE_SIZE, "PH= %d Useful = %d Average = %d DIFF = %d Offset = %d \n",
-					csx,useful,average,diff,offset);
+			dcap = smtc_off_to_dcap(offset);
+
+			p += snprintf(p, PAGE_SIZE, "PH= %d Useful= %d Average= %d DIFF= %d Offset= %d CAP= %d\n",
+					csx,useful,average,diff,offset, dcap);
 		}
 	}
 	return (p-buf);
@@ -677,7 +735,7 @@ static ssize_t sx937x_fac_enable_store(struct device *dev,
 	if ( !strncmp(buf, "0", 1)) {
 		LOG_INFO("disnable cap sensor\n");
 		sx937x_i2c_read_16bit(this->bus, SX937X_GENERAL_SETUP, &temp);
-		temp = temp | 0xFFFFFF00;
+		temp = temp & 0xFFFFFF00;
 		LOG_INFO("set reg 0x%x val 0x%x\n", SX937X_GENERAL_SETUP, temp);
 		sx937x_i2c_write_16bit(this->bus, SX937X_GENERAL_SETUP, temp);
 		if(ret <0){
@@ -1003,7 +1061,9 @@ static void touchProcess(psx93XX_t this)
 static int sx937x_parse_dts(struct sx937x_platform_data *pdata, struct device *dev)
 {
 	struct device_node *dNode = dev->of_node;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 	enum of_gpio_flags flags;
+#endif
 	int i,j, rc;
 	const char *reg_group_name = "Semtech,reg-init";
 	int name_index,name_count;
@@ -1026,16 +1086,24 @@ static int sx937x_parse_dts(struct sx937x_platform_data *pdata, struct device *d
 			break;
 		case SX937X_POWER_SUPPLY_TYPE_EXTERNAL_LDO:
 			/* parse the gpio number for external LDO enable pin*/
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 			pdata->eldo_gpio = of_get_named_gpio_flags(dNode,
 					"Semtech,eldo-gpio",0,&flags);
+#else
+			pdata->eldo_gpio = of_get_named_gpio(dNode,
+					"Semtech,eldo-gpio",0);
+#endif
 			LOG_INFO("used eLDO_gpio 0x%x \n", pdata->eldo_gpio);
 			break;
 		default:
 			LOG_INFO("Error power_supply_type: 0x%x \n", pdata->power_supply_type);
 			break;
 	}
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 	pdata->irq_gpio= of_get_named_gpio_flags(dNode,"Semtech,nirq-gpio", 0, &flags);
+#else
+	pdata->irq_gpio = of_get_named_gpio(dNode,"Semtech,nirq-gpio", 0);
+#endif
 	if (pdata->irq_gpio < 0){
 		LOG_ERR("get irq_gpio error\n");
 		return -ENODEV;
@@ -1104,6 +1172,21 @@ static int sx937x_parse_dts(struct sx937x_platform_data *pdata, struct device *d
 			return -ENOMEM;
 	}
 
+	//load default reg 0X8024 config
+	of_property_read_u32(dNode,"Semtech,default_operation_num",&pdata->default_reg_num);
+	LOG_INFO("size of default operation num elements %d \n", pdata->default_reg_num);
+	if(pdata->default_reg_num >0)
+	{
+		pdata->default_setup_reg = devm_kzalloc(dev,sizeof(struct smtc_reg_data)*pdata->default_reg_num, GFP_KERNEL);
+		if (unlikely(pdata->default_setup_reg == NULL))
+		{
+			LOG_ERR("size of elements %d alloc error\n", pdata->default_reg_num);
+			return -ENOMEM;
+		}
+		// initialize the array
+		if (of_property_read_u32_array(dNode,"Semtech,flip_default_reg_init",(u32*)&(pdata->default_setup_reg[0]),sizeof(struct smtc_reg_data)*pdata->default_reg_num/sizeof(u32)))
+			return -ENOMEM;
+	}
 	//load param when flip near
 	of_property_read_u32(dNode,"Semtech,flip_operation_num",&pdata->flip_reg_num);
 	LOG_INFO("size of flip state elements %d \n", pdata->flip_reg_num);
@@ -1159,7 +1242,9 @@ static int sx937x_parse_dts(struct sx937x_platform_data *pdata, struct device *d
 
 	pdata->reinit_on_cali = of_property_read_bool(dNode, "reinit-on-cali");
 	pdata->reinit_on_i2c_failure = of_property_read_bool(dNode, "reinit-on-i2c-failure");
-	LOG_INFO("reinit_on_cali %d,reinit_on_i2c_failure %d \n", pdata->reinit_on_cali,pdata->reinit_on_i2c_failure);
+	pdata->capsensor_upd_support = 0;
+	of_property_read_u32(dNode,"capsensor_upd_support",&pdata->capsensor_upd_support) ;
+	LOG_INFO("reinit_on_cali %d,reinit_on_i2c_failure %d,capsensor_upd_support %d \n", pdata->reinit_on_cali,pdata->reinit_on_i2c_failure,pdata->capsensor_upd_support);
 
 	LOG_DBG("-[%d] parse_dt complete\n", pdata->irq_gpio);
 	return 0;
@@ -1238,12 +1323,19 @@ static int capsensor_set_enable(struct sensors_classdev *sensors_cdev,
 			if (enable == 1) {
 				LOG_INFO("enable cap sensor : %s\n", sensors_cdev->name);
 				sx937x_i2c_read_16bit(this->bus, SX937X_GENERAL_SETUP, &temp);
-				temp = temp | 0x000000FF;
+				if (this->hw->capsensor_upd_support)
+				{
+					temp = temp | 0x0000007F;
+				}
+				else
+				{
+					temp = temp | 0x000000FF;
+				}
 				if (!strncmp(sensors_cdev->name, "Moto_Top_Approach_Det", 21))
 				{
 					LOG_INFO("MotoTopApproach_ENABLE_FLAG is true and calibrate MotoTopApproach channel");
 					MotoTopApproach_ENABLE_FLAG = 1;
-					temp = temp | 0x80FF;
+					temp = temp | 0x00FF;
 				}
 				LOG_DBG("set reg 0x%x val 0x%x\n", SX937X_GENERAL_SETUP, temp);
 				sx937x_i2c_write_16bit(this->bus, SX937X_GENERAL_SETUP, temp);
@@ -1261,6 +1353,10 @@ static int capsensor_set_enable(struct sensors_classdev *sensors_cdev,
 				{
 					LOG_INFO("MotoTopApproach_ENABLE_FLAG is false");
 					MotoTopApproach_ENABLE_FLAG = 0;
+					sx937x_i2c_read_16bit(this->bus, SX937X_GENERAL_SETUP, &temp);
+					temp = temp & 0xFFFFFF7F;
+					LOG_INFO("set reg 0x%x val 0x%x\n", SX937X_GENERAL_SETUP, temp);
+					sx937x_i2c_write_16bit(this->bus, SX937X_GENERAL_SETUP, temp);
 				}
 			} else {
 				LOG_ERR("unknown enable symbol\n");
@@ -1292,7 +1388,11 @@ static int capsensor_set_enable(struct sensors_classdev *sensors_cdev,
  * \param id pointer to i2c_device_id
  * \return Whether probe was successful
  */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 static int sx937x_probe(struct i2c_client *client, const struct i2c_device_id *id)
+#else
+static int sx937x_probe(struct i2c_client *client)
+#endif
 {
 	int i = 0;
 	int err = 0;
@@ -1667,7 +1767,11 @@ static struct i2c_driver sx937x_driver =
 };
 static int __init sx937x_I2C_init(void)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 	capsense_class = class_create(THIS_MODULE, "capsense");
+#else
+	capsense_class = class_create("capsense");
+#endif
 	if (IS_ERR(capsense_class))
 	{
 		printk("sensor init fail!\n");
@@ -1692,29 +1796,115 @@ MODULE_VERSION("1");
 /* Read i2c every 10 seconds, if there is an error, schedule again in 2 seconds
  * and if it fails a few more times we can assume there is a device error and reset
  */
+static void vdd_power_off_on(psx93XX_t this, bool on)
+{
+	int err = 0;
+	psx937x_platform_data_t pdata = 0;
+	LOG_INFO("vdd_power_off_on enter");
+	if((pdata = this->hw)){
+		if(pdata->eldo_vdd_en) {
+			err = gpio_direction_output(pdata->eldo_gpio,on);
+			LOG_INFO("SX937x reused eLDO_gpio 0x%x status:%d\n",pdata->eldo_gpio, on );
+			if(err < 0){
+				LOG_ERR("SX937x eLDO_gpio output fail,%d\n", err);
+			}
+		} else {
+		 	LOG_ERR("SX937x using other power supply\n");
+		}
+	}
+}
+
+static void sx937x_register_err(psx93XX_t this)
+{
+	int ph = 0, idx = 0, num_same_val,i = 0;
+	u32 reg_val, phen =0;
+	//static int check_round = 0;
+	//static u32 ph_useful[MAX_CHANNEL_NUMBER][CHECK_TIMES] ={0};
+	//sx937x_i2c_read_16bit(this->bus, SX937X_GENERAL_SETUP, &phen);
+	sx937x_esd_data_t* esd_data = &this->hw->esd_data;
+	struct _buttonInfo *buttons = this->hw->buttons;
+	int buttonSize = this->hw->buttonSize;
+	bool freeze = false;
+	for (i = 0; i < buttonSize; i++)
+	{
+		if (buttons[i].enabled){
+			phen |= 1 << i;
+			LOG_DBG("sx937x_register_err i=%d  phen %d",i ,phen );
+		}
+	}
+	//phen &= 0xFF; //current enabled phases
+	//update useful of each phase
+	for(ph=0; ph<MAX_CHANNEL_NUMBER; ph++) {
+		if(phen & 1<<ph) {
+			sx937x_i2c_read_16bit(this->bus, SX937X_USEFUL_PH0 + ph*4, &reg_val);
+			esd_data->ph_useful[ph][esd_data->check_round] = reg_val;
+		} else {
+			esd_data->ph_useful[ph][esd_data->check_round] = 0;
+		}
+		LOG_DBG("phen = %d useful[%d][%d] = %d\n",phen,ph,esd_data->check_round,esd_data->ph_useful[ph][esd_data->check_round]);
+	}
+	//reset if any phase read the same value by CHECK_TIMES
+	for(ph=0; ph<MAX_CHANNEL_NUMBER; ph++) {
+		num_same_val = 0;
+		if(phen & 1<<ph) {
+			for(idx=1; idx<CHECK_TIMES; idx++) {
+				if(esd_data->ph_useful[ph][idx] != 0 && esd_data->ph_useful[ph][idx] != USEFUL_MAX_VALUE && esd_data->ph_useful[ph][idx-1] == esd_data->ph_useful[ph][idx]) {
+					if(++num_same_val >= CHECK_TIMES-1) {
+						LOG_ERR("maybe esd trriger sx937x ph[%d] no change:%d %d %d\n",ph,esd_data->ph_useful[ph][idx-2],esd_data->ph_useful[ph][idx-1],esd_data->ph_useful[ph][idx]);
+						freeze = true ;
+
+					}
+				}
+			}
+		}
+	}
+	if (freeze)
+	{
+		sx937x_reinitialize(this);
+		LOG_ERR("sx937x ph data freeze reinitialize ");
+		goto reinit_end;
+	}
+reinit_end:
+	esd_data->check_round = (esd_data->check_round + 1) % CHECK_TIMES;
+	freeze = false;
+}
 static void sx937x_i2c_watchdog_work(struct work_struct *work)
 {
-	static int err_cnt = 0;
+	//static int err_cnt = 0;
 	psx93XX_t this = container_of(work, sx93XX_t, i2c_watchdog_work.work);
+	sx937x_esd_data_t* esd_data = &this->hw->esd_data;
 	int ret;
 	u32 temp;
 	int delay = SX937X_I2C_WATCHDOG_TIME;
-
 	LOG_DBG("sx937x_i2c_watchdog_work");
 
 	if(!this->suspended) {
-		ret = sx937x_i2c_read_16bit(this->bus, SX937X_DEVICE_INFO, &temp);
+		ret = sx937x_i2c_read_16bit(this->bus, SX937X_IRQ_MASK_A, &temp);
 		if (ret < 0) {
-			err_cnt++;
-			LOG_ERR("sx937x_i2c_watchdog_work err_cnt: %d", err_cnt);
+			//err_1:i2c fail
+			esd_data->err_cnt++;
+			LOG_ERR("sx937x_i2c_watchdog_work err_cnt: %d", esd_data->err_cnt);
 			delay = SX937X_I2C_WATCHDOG_TIME_ERR;
-		} else
-			err_cnt = 0;
+			if (esd_data->err_cnt >= 3) {
+				esd_data->err_cnt = 0;
+				vdd_power_off_on(this, 0);
+				msleep(100);
+				vdd_power_off_on(this, 1);
+				sx937x_reinitialize(this);
+				delay = SX937X_I2C_WATCHDOG_TIME;
+			}
+		} else {
 
-		if (err_cnt >= 3) {
-			err_cnt = 0;
-			sx937x_reinitialize(this);
-			delay = SX937X_I2C_WATCHDOG_TIME;
+			esd_data->err_cnt = 0;
+			//err_2:default value of 0x4004 is 0x60 and usually will be configured to 0x70
+			if(temp == 0x60) {
+				LOG_ERR("sx937x_i2c_watchdog_work 0x4004 used default value: %d\n", temp);
+				sx937x_reinitialize(this);
+			} else {
+				//err_3:reset if any phase read the same value by CHECK_TIMES
+				LOG_DBG("sx937x_i2c_watchdog_work:checking enabled phase\n");
+				sx937x_register_err(this);
+			}
 		}
 	} else
 		LOG_DBG("sx937x_i2c_watchdog_work before resume.");
@@ -1765,7 +1955,58 @@ static void sx937x_reinitialize(psx93XX_t this)
 				break;
 			}
 		}
+		if (pdata->reinit_on_i2c_failure && this->hw->flip_reg_num > 0){
+			if ( !pdata->state_flip_open )
+			{
+				sx937x_i2c_read_16bit(this->bus, SX937X_GENERAL_SETUP, &temp);
+				temp = temp & 0x000000FF;
+				for (i = 0; i < this->hw->flip_reg_num; i++)
+				{
+					if (this->hw->flip_near_reg[i].reg == SX937X_GENERAL_SETUP)
+					{
+						this->hw->flip_near_reg[i].val = this->hw->flip_near_reg[i].val & 0xFFFFFF00;
+						this->hw->flip_near_reg[i].val = this->hw->flip_near_reg[i].val | temp;
+					}
+					sx937x_i2c_write_16bit(this->bus, this->hw->flip_near_reg[i].reg,this->hw->flip_near_reg[i].val);
+					LOG_INFO("sx937 reinitialize flip near download %s params set Reg 0x%x Value: 0x%x\n",
+						this->hw->dbg_name,this->hw->flip_near_reg[i].reg,this->hw->flip_near_reg[i].val);
+				}
+			}
+			if (pdata->state_flip_open )
+			{
+				sx937x_i2c_read_16bit(this->bus, SX937X_GENERAL_SETUP, &temp);
+				temp = temp & 0x000000FF;
+				if (this->hw->flip_far_reg_num > 0)
+				{
+					for (i = 0; i < this->hw->flip_far_reg_num; i++)
+					{
+						if (this->hw->flip_far_reg[i].reg == SX937X_GENERAL_SETUP)
+						{
+							this->hw->flip_far_reg[i].val = this->hw->flip_far_reg[i].val & 0xFFFFFF00;
+							this->hw->flip_far_reg[i].val = this->hw->flip_far_reg[i].val | temp;
+						}
+						sx937x_i2c_write_16bit(this->bus, this->hw->flip_far_reg[i].reg,this->hw->flip_far_reg[i].val);
+						LOG_INFO("sx937 reinitialize flip far reg num >0  download %s params set Reg 0x%x Value: 0x%x\n",
+							this->hw->dbg_name,this->hw->flip_far_reg[i].reg,this->hw->flip_far_reg[i].val);
+					}
+				}
+				else
+				{
+					for (i = 0; i < this->hw->flip_reg_num; i++)
+					{
+						if (this->hw->flip_far_reg[i].reg == SX937X_GENERAL_SETUP)
+						{
+							this->hw->flip_far_reg[i].val = this->hw->flip_far_reg[i].val & 0xFFFFFF00;
+							this->hw->flip_far_reg[i].val = this->hw->flip_far_reg[i].val | temp;
+						}
+						sx937x_i2c_write_16bit(this->bus, this->hw->flip_far_reg[i].reg,this->hw->flip_far_reg[i].val);
+						LOG_INFO("sx937 reinitialize flip far download %s params set Reg 0x%x Value: 0x%x\n",
+							this->hw->dbg_name,this->hw->flip_far_reg[i].reg,this->hw->flip_far_reg[i].val);
+					}
+				}
+			}
 
+		}
 		manual_offset_calibration(this->hw);
 		atomic_set(&this->init_busy, 0);
 		LOG_ERR("reinitialized sx937x, count %d\n", this->reset_count++);

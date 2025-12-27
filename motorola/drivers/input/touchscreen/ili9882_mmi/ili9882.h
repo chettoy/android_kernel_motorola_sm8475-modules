@@ -477,10 +477,23 @@ struct report_info_block {
 	u8 nIsSPISLAVE		:1;
 	u8 nIsI2C		:1;
 	u8 nReserved00		:3;
-	u8 nReserved01		:8;
+	u8 nReportResolutionMode:3;
+	u8 nReserved01		:5;
 	u8 nReserved02		:8;
 	u8 nReserved03		:8;
 };
+
+struct ili_debug_info{//Glove Hopping Charge NoiseWarning Rebase Bending GndUnstable Palm
+	u8 nGlove		    : 1;
+	u8 nHopping		    : 1;
+	u8 nCharge		    : 1;
+	u8 nNoiseWarning	: 1;
+	u8 nRebase		    : 1;
+	u8 nBending		    : 1;
+	u8 nGndUnstable  	: 1;
+	u8 nPalm			: 1;
+};
+
 
 #define TDDI_I2C_ADDR				0x41
 #define TDDI_DEV_ID				"ILITEK_TDDI"
@@ -751,6 +764,7 @@ struct report_info_block {
 #define DATA_FORMAT_DEBUG_LITE_AREA_CMD			0x03
 #define P5_X_DEMO_MODE_PACKET_INFO_LEN			3
 #define P5_X_DEMO_MODE_PACKET_LEN			43
+#define P5_X_DEMO_MODE_PACKET_LEN_HIGH_RESOLUTION	72
 #define P5_X_INFO_HEADER_LENGTH				3
 #define P5_X_INFO_CHECKSUM_LENGTH			1
 #define P5_X_DEMO_DEBUG_INFO_ID0_LENGTH			14
@@ -758,9 +772,12 @@ struct report_info_block {
 #define P5_X_TEST_MODE_PACKET_LENGTH			1180
 #define P5_X_GESTURE_NORMAL_LENGTH			8
 #define P5_X_GESTURE_INFO_LENGTH			170
+#define P5_X_GESTURE_INFO_LENGTH_HIGH_RESOLUTION	221
 #define P5_X_DEBUG_LITE_LENGTH				300
 #define P5_X_CORE_VER_THREE_LENGTH			5
 #define P5_X_CORE_VER_FOUR_LENGTH			6
+#define P5_X_DEBUG_LOW_RESOLUTION_FINGER_DATA_LENGTH	35
+#define P5_X_DEBUG_HIGH_RESOLUTION_FINGER_DATA_LENGTH	45
 #define P5_X_5B_LOW_RESOLUTION_LENGTH			62
 #define P5_X_CUSTOMER_LENGTH				50
 
@@ -797,6 +814,7 @@ struct report_info_block {
 #define P5_X_FW_DELTA_DATA_MODE				0x03
 #define P5_X_FW_RAW_DATA_MODE				0x08
 #define P5_X_DEMO_PACKET_ID				0x5A
+#define P5_X_DEBUG_INFO_PACKET_ID           0xBB
 #define P5_X_DEBUG_PACKET_ID				0xA7
 #define P5_X_DEMO_HIGH_RESOLUTION_PACKET_ID		0x5B
 #define P5_X_DEBUG_HIGH_RESOLUTION_PACKET_ID		0xA8
@@ -833,6 +851,8 @@ struct report_info_block {
 
 #ifdef ILI_SET_TOUCH_STATE
 #define MAX_PANEL_IDX 2
+#define POSITION_LOW_RESOLUTION		0X00
+#define POSITION_HIGH_RESOLUTION	0x01
 enum touch_panel_id {
 	TOUCH_PANEL_IDX_PRIMARY = 0,
 	TOUCH_PANEL_MAX_IDX,
@@ -952,6 +972,7 @@ struct ilitek_ts_data {
 	int gesture_demo_ctrl;
 	struct gesture_symbol ges_sym;
 	struct report_info_block rib;
+	struct ili_debug_info di;
 	int canvas_value;
 #ifdef ILITEK_PEN_NOTIFIER
 	struct notifier_block pen_notif;
@@ -1028,6 +1049,7 @@ struct ilitek_ts_data {
 	struct ili_sensor_platform_data *sensor_pdata;
 #endif
 
+	bool check_resolution;
 	/* Event for driver test */
 	struct completion esd_done;
 
@@ -1050,6 +1072,8 @@ struct ilitek_ts_data {
 #ifdef ILI_TOUCH_LAST_TIME
 	ktime_t last_event_time;
 #endif
+	int interpolation;
+	bool interpolation_ctrl;
 };
 extern struct ilitek_ts_data *ilits;
 
@@ -1152,6 +1176,10 @@ extern int ili_fw_upgrade(int op);
 /* Prototypes for tddi mp test */
 extern int ili_mp_test_main(char *apk, bool lcm_on);
 
+/* debug info for moto */
+extern void ili_report_touch_debug_info(u8 *buf);
+
+
 /* Prototypes for tddi core functions */
 extern int ili_touch_esd_gesture_flash(void);
 extern int ili_touch_esd_gesture_iram(void);
@@ -1252,7 +1280,7 @@ extern int ili_get_tp_recore_ctrl(int data);
 extern int ili_get_tp_recore_data(void);
 extern void ili_demo_debug_info_mode(u8 *buf, size_t rlen);
 extern void ili_demo_debug_info_id0(u8 *buf, size_t len);
-
+extern int ilitek_set_report_mode(int on);
 #ifdef ILI_SET_TOUCH_STATE
 int touch_set_state(int state, int panel_idx);
 int check_touch_state(int *state, int panel_idx);

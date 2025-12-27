@@ -36,6 +36,11 @@
 #include <linux/input/sx937x.h> 	/* main struct, interrupt,init,pointers */
 #include "base.h"
 
+#ifdef CONFIG_CAPSENSE_HALL_CAL
+#include <linux/phone_case_detection_notify.h>
+#endif
+
+
 #define LOG_TAG "[sar SX937x]: "
 
 #define LOG_INFO(fmt, args...)    pr_info(LOG_TAG "[INFO]" "<%s><%d>"fmt, __func__, __LINE__, ##args)
@@ -411,10 +416,15 @@ static void read_rawData(psx93XX_t this)
 		read_dbg_raw(this);
 	}
 }
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 static ssize_t capsense_reset_store(struct class *class,
 		struct class_attribute *attr,
 		const char *buf, size_t count)
+#else
+static ssize_t capsense_reset_store(const struct class *class,
+		const struct class_attribute *attr,
+		const char *buf, size_t count)
+#endif
 {
 	u32 temp = 0;
 	sx937x_i2c_read_16bit(global_sx937x, SX937X_GENERAL_SETUP, &temp);
@@ -432,9 +442,15 @@ static ssize_t capsense_reset_store(struct class *class,
 }
 
 #ifdef CONFIG_CAPSENSE_HEADSET_STATE
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 static ssize_t capsense_headset_store(struct class *class,
 		struct class_attribute *attr,
 		const char *buf, size_t count)
+#else
+static ssize_t capsense_headset_store(const struct class *class,
+		const struct class_attribute *attr,
+		const char *buf, size_t count)
+#endif
 {
 	u32 reg_temp = 0;
 	int i;
@@ -477,10 +493,15 @@ static ssize_t capsense_headset_store(struct class *class,
 	return count;
 }
 #endif
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 static ssize_t capsense_raw_data_show(struct class *class,
 		struct class_attribute *attr,
 		char *buf)
+#else
+static ssize_t capsense_raw_data_show(const struct class *class,
+		const struct class_attribute *attr,
+		char *buf)
+#endif
 {
 	char *p = buf;
 	int csx;
@@ -505,10 +526,15 @@ static ssize_t capsense_raw_data_show(struct class *class,
 	}
 	return (p-buf);
 }
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 static ssize_t sx937x_register_write_store(struct class *class,
 		struct class_attribute *attr,
 		const char *buf, size_t count)
+#else
+static ssize_t sx937x_register_write_store(const struct class *class,
+		const struct class_attribute *attr,
+		const char *buf, size_t count)
+#endif
 {
 	u32 reg_address = 0, val = 0;
 	psx93XX_t this = global_sx937x;
@@ -527,9 +553,15 @@ static ssize_t sx937x_register_write_store(struct class *class,
 
 static int sx937x_temp_regist = 0;
 static u32 sx937x_temp_val = 0;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 static ssize_t sx937x_register_read_store(struct class *class,
 		struct class_attribute *attr,
 		const char *buf, size_t count)
+#else
+static ssize_t sx937x_register_read_store(const struct class *class,
+		const struct class_attribute *attr,
+		const char *buf, size_t count)
+#endif
 {
 	int nirq_state = 0;
 	psx93XX_t this = global_sx937x;
@@ -546,17 +578,27 @@ static ssize_t sx937x_register_read_store(struct class *class,
 	LOG_DBG("Register(0x%2x) data(0x%4x) nirq_state(%d)\n", sx937x_temp_regist, sx937x_temp_val, nirq_state);
 	return count;
 }
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 static ssize_t sx937x_register_read_show(struct class *class,
 		struct class_attribute *attr,
 		char *buf)
+#else
+static ssize_t sx937x_register_read_show(const struct class *class,
+		const struct class_attribute *attr,
+		char *buf)
+#endif
 {
 	return sprintf(buf, "Register(0x%2x) data(0x%4x)\n", sx937x_temp_regist, sx937x_temp_val);
 }
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 static ssize_t reg_show(struct class *class,
 		struct class_attribute *attr,
 		char *buf)
+#else
+static ssize_t reg_show(const struct class *class,
+		const struct class_attribute *attr,
+		char *buf)
+#endif
 {
 	u32 *p = (u32*)buf;
 #ifdef CONFIG_CAPSENSE_POWER_CONTROL_SUPPORT
@@ -585,9 +627,15 @@ static ssize_t reg_show(struct class *class,
 	0-real write,
 	1-just transfer the reg value want to be readed
 */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 static ssize_t reg_store(struct class *class,
 		struct class_attribute *attr,
 		const char *buf, size_t count)
+#else
+static ssize_t reg_store(const struct class *class,
+		const struct class_attribute *attr,
+		const char *buf, size_t count)
+#endif
 {
 	psx93XX_t this = global_sx937x;
 	u16 regaddr = 0;
@@ -621,10 +669,15 @@ static ssize_t reg_store(struct class *class,
 	}
 	return count;
 }
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 static ssize_t manual_offset_calibration_show(struct class *class,
 		struct class_attribute *attr,
 		char *buf)
+#else
+static ssize_t manual_offset_calibration_show(const struct class *class,
+		const struct class_attribute *attr,
+		char *buf)
+#endif
 {
 	u32 reg_value = 0;
 	psx93XX_t this = global_sx937x;
@@ -634,10 +687,15 @@ static ssize_t manual_offset_calibration_show(struct class *class,
 	return sprintf(buf, "%d\n", reg_value);
 }
 
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 static ssize_t manual_offset_calibration_store(struct class *class,
 		struct class_attribute *attr,
 		const char *buf, size_t count)
+#else
+static ssize_t manual_offset_calibration_store(const struct class *class,
+		const struct class_attribute *attr,
+		const char *buf, size_t count)
+#endif
 {
 	unsigned long val;
 	psx93XX_t this = global_sx937x;
@@ -653,19 +711,29 @@ static ssize_t manual_offset_calibration_store(struct class *class,
 
 	return count;
 }
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 static ssize_t sx937x_int_state_show(struct class *class,
 		struct class_attribute *attr,
 		char *buf)
+#else
+static ssize_t sx937x_int_state_show(const struct class *class,
+		const struct class_attribute *attr,
+		char *buf)
+#endif
 {
 	psx93XX_t this = global_sx937x;
 	LOG_DBG("Reading INT line state\n");
 	return sprintf(buf, "%d\n", this->int_state);
 }
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 static ssize_t sx937x_reinitialize_store(struct class *class,
 		struct class_attribute *attr,
 		const char *buf, size_t count)
+#else
+static ssize_t sx937x_reinitialize_store(const struct class *class,
+		const struct class_attribute *attr,
+		const char *buf, size_t count)
+#endif
 {
 	psx93XX_t this = global_sx937x;
 
@@ -728,7 +796,9 @@ static struct class_attribute capsense_class_attributes[] = {
 
 struct class capsense_class = {
 	.name                   = "capsense",
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 	.owner                  = THIS_MODULE,
+#endif
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,14,0)
 	.class_groups           = capsense_class_groups,
 #else
@@ -801,7 +871,7 @@ static void sx937x_reg_init(psx93XX_t this)
 		sx937x_i2c_write_16bit(this, SX937X_COMMAND, 0xF);  //enable phase control
 	}
 	else {
-		LOG_ERR("ERROR! platform data 0x%p\n",pDevice->hw);
+		LOG_ERR("ERROR! platform data exception\n");
 	}
 
 }
@@ -1024,7 +1094,9 @@ static bool parse_flip_dt_params(struct sx937x_platform_data *pdata, struct devi
 static int sx937x_parse_dt(struct sx937x_platform_data *pdata, struct device *dev)
 {
 	struct device_node *dNode = dev->of_node;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 	enum of_gpio_flags flags;
+#endif
 	int i, rc, support_panel_num;
 	const char *panel_name, *current_dsi;
 	const char *reg_group_name = "Semtech,reg-init";
@@ -1047,17 +1119,26 @@ static int sx937x_parse_dt(struct sx937x_platform_data *pdata, struct device *de
 			break;
 		case SX937X_POWER_SUPPLY_TYPE_EXTERNAL_LDO:
 			/* parse the gpio number for external LDO enable pin*/
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 			pdata->eldo_gpio = of_get_named_gpio_flags(dNode,
 					"Semtech,eldo-gpio",0,&flags);
+#else
+			pdata->eldo_gpio = of_get_named_gpio(dNode,
+					"Semtech,eldo-gpio",0);
+#endif
 			LOG_INFO("used eLDO_gpio 0x%x \n", pdata->eldo_gpio);
 			break;
 		default:
 			LOG_INFO("Error power_supply_type: 0x%x \n", pdata->power_supply_type);
 			break;
 	}
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 	pdata->irq_gpio= of_get_named_gpio_flags(dNode,
 			"Semtech,nirq-gpio", 0, &flags);
+#else
+	pdata->irq_gpio= of_get_named_gpio(dNode,
+			"Semtech,nirq-gpio", 0);
+#endif
 	irq_gpio_num = pdata->irq_gpio;
 	if (pdata->irq_gpio < 0){
 		LOG_ERR("get irq_gpio error\n");
@@ -1109,7 +1190,6 @@ static int sx937x_parse_dt(struct sx937x_platform_data *pdata, struct device *de
 			return -ENOMEM;
 		}
 
-		current_dsi = get_dsi_display_name();
 		/*
 		   if three's no "support-panel-num" in dts or
 		   there's no matched panel_name(maybe it is a bare board),
@@ -1118,6 +1198,7 @@ static int sx937x_parse_dt(struct sx937x_platform_data *pdata, struct device *de
 		if(!of_property_read_u32(dNode,"support-panel-num",&support_panel_num))
 		{
 			LOG_INFO("support_panel_num is %d \n", support_panel_num);
+			current_dsi = get_dsi_display_name();
 			for (i = 0; i < support_panel_num; i++) {
 				if(of_property_read_string_index(dNode, "support-panel-names", i, &panel_name))
 				{
@@ -1351,13 +1432,14 @@ static int ps_notify_callback(struct notifier_block *self,
 		LOG_DBG("ps notification: event = %lu\n", event);
 		retval = ps_get_state(psy, &present);
 		if (retval) {
-			return retval;
+			LOG_ERR("psy get state failed, ret=%d\n", retval);
+			return NOTIFY_DONE;
 		}
 
 		if (event == PSY_EVENT_PROP_CHANGED) {
 			if (data->ps_is_present == present) {
 				LOG_DBG("ps present state not change\n");
-				return 0;
+				return NOTIFY_DONE;
 			}
 		}
 		data->ps_is_present = present;
@@ -1371,8 +1453,10 @@ static int ps_notify_callback(struct notifier_block *self,
 		LOG_DBG("phone ps notification: event = %lu\n", event);
 
 		retval = ps_get_state(psy, &present);
-		if (retval)
-			return retval;
+		if (retval) {
+			LOG_ERR("psy get state failed,ret=%d\n", retval);
+			return NOTIFY_DONE;
+		}
 
 		if (data->phone_is_present != present) {
 			data->phone_is_present = present;
@@ -1381,8 +1465,42 @@ static int ps_notify_callback(struct notifier_block *self,
 	}
 #endif
 
-	return 0;
+	return NOTIFY_DONE;
 }
+
+#ifdef CONFIG_CAPSENSE_HALL_CAL
+static void hall_detection_notify_callback_work(struct work_struct *work)
+{
+    u32 temp = 0;
+    sx937x_i2c_read_16bit(global_sx937x, SX937X_GENERAL_SETUP, &temp);
+    if (temp & 0x000000FF) {
+        LOG_DBG("Hall state change, Going to force calibrate\n");
+        manual_offset_calibration(global_sx937x);
+    }
+}
+
+static int hall_detection_notifier_callback(struct notifier_block *self,
+                    unsigned long event, void *p)
+{
+    struct sx937x_platform_data *data =
+        container_of(self, struct sx937x_platform_data, hall_nb);
+    int present;
+
+    present = event;
+    LOG_DBG("hall_detection_notifier_callback,present=%d\n",present);
+
+    if (data->hall_is_present != present) {
+        data->hall_is_present = present;
+        LOG_INFO("hall_is_present=%d\n",data->hall_is_present);
+		/* Delay calibration by 1 second (HZ) to debounce rapid attach/detach events from the Hall sensor. */
+        schedule_delayed_work(&data->hall_notify_work, HZ);
+    } else {
+        LOG_DBG("hall present state not change\n");
+    }
+
+    return 0;
+}
+#endif
 
 #ifdef CONFIG_CAPSENSE_FLIP_CAL
 static void write_flip_regs(int num_regs, struct smtc_reg_data *regs)
@@ -1444,7 +1562,11 @@ static void sx937x_i2c_watchdog_work(struct work_struct *work);
  * \param id pointer to i2c_device_id
  * \return Whether probe was successful
  */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 static int sx937x_probe(struct i2c_client *client, const struct i2c_device_id *id)
+#else
+static int sx937x_probe(struct i2c_client *client)
+#endif
 {
 	int i = 0;
 	int err = 0;
@@ -1455,6 +1577,10 @@ static int sx937x_probe(struct i2c_client *client, const struct i2c_device_id *i
 #ifdef CONFIG_CAPSENSE_USB_CAL
 	struct power_supply *psy = NULL;
 #endif
+#ifdef CONFIG_CAPSENSE_HALL_CAL
+    int rc;
+#endif
+
 	struct totalButtonInformation *pButtonInformationData = NULL;
 	struct i2c_adapter *adapter = to_i2c_adapter(client->dev.parent);
 
@@ -1603,10 +1729,10 @@ static int sx937x_probe(struct i2c_client *client, const struct i2c_device_id *i
 				LOG_ERR("Create fsys class failed (%d)\n", err);
 				return err;
 			}
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 			/*restore sys/class/capsense label*/
 			kobject_uevent(&capsense_class.p->subsys.kobj, KOBJ_CHANGE);
-
+#endif
 			/* Add Pointer to main platform data struct */
 			pDevice->hw = pplatData;
 
@@ -1643,7 +1769,7 @@ static int sx937x_probe(struct i2c_client *client, const struct i2c_device_id *i
 					pButtonInformationData->buttons[i].sensors_capsensor_cdev.type = SENSOR_TYPE_MOTO_CAPSENSE;
 					pButtonInformationData->buttons[i].sensors_capsensor_cdev.max_range = "5";
 					pButtonInformationData->buttons[i].sensors_capsensor_cdev.resolution = "5.0";
-					pButtonInformationData->buttons[i].sensors_capsensor_cdev.sensor_power = "3";
+					pButtonInformationData->buttons[i].sensors_capsensor_cdev.sensor_power = "0.1";
 					pButtonInformationData->buttons[i].sensors_capsensor_cdev.min_delay = 0;
 					pButtonInformationData->buttons[i].sensors_capsensor_cdev.fifo_reserved_event_count = 0;
 					pButtonInformationData->buttons[i].sensors_capsensor_cdev.fifo_max_event_count = 0;
@@ -1674,6 +1800,7 @@ static int sx937x_probe(struct i2c_client *client, const struct i2c_device_id *i
 				power_supply_unreg_notifier(&pplatData->ps_notif);
 			}
 		}
+
 #ifdef CONFIG_CAPSENSE_FLIP_CAL
 		if (of_property_read_bool(client->dev.of_node, "extcon")) {
 			pplatData->flip_notif.notifier_call = flip_notify_callback;
@@ -1696,6 +1823,23 @@ static int sx937x_probe(struct i2c_client *client, const struct i2c_device_id *i
 		} else
 			LOG_ERR("extcon not in dev tree!\n");
 #endif
+#endif
+
+#ifdef CONFIG_CAPSENSE_HALL_CAL
+        INIT_DELAYED_WORK(&pplatData->hall_notify_work, hall_detection_notify_callback_work);
+        pplatData->hall_nb.notifier_call = hall_detection_notifier_callback;
+        err = phone_case_detection_register_client(&pplatData->hall_nb);
+        if (err)
+            LOG_ERR("Unable to register hall_nb: %d\n", err);
+
+        rc = phone_case_detection_get_hall_state();
+        if (rc < 0) {
+            LOG_ERR("hall not enabled rc=%d\n", rc);
+            phone_case_detection_unregister_client(&pplatData->hall_nb);
+        } else {
+            pplatData->hall_is_present = rc;
+            LOG_INFO("sx937x_probe:hall_is_present=%d\n",pplatData->hall_is_present);
+        }
 #endif
 
 		sx93XX_IRQ_init(this);

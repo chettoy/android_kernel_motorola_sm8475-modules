@@ -58,6 +58,13 @@ static ssize_t goodix_ts_stowed_show(struct device *dev,
 static DEVICE_ATTR(stowed, (S_IWUSR | S_IWGRP | S_IRUGO),
 		goodix_ts_stowed_show, goodix_ts_stowed_store);
 
+static ssize_t goodix_ts_pocket_mode_show(struct device *dev,
+	struct device_attribute *attr, char *buf);
+static ssize_t goodix_ts_pocket_mode_store(struct device *dev,
+			struct device_attribute *attr, const char *buf, size_t size);
+static DEVICE_ATTR(pocket_mode, (S_IRUGO | S_IWUSR | S_IWGRP),
+	goodix_ts_pocket_mode_show, goodix_ts_pocket_mode_store);
+
 static int goodix_ts_send_cmd(struct goodix_ts_core *core_data,
 		u8 cmd, u8 len, u8 subCmd, u8 subCmd2);
 
@@ -207,7 +214,7 @@ static int goodix_ts_mmi_methods_drv_irq(struct device *dev, int state) {
 	GET_GOODIX_DATA(dev);
 
 	if (core_data->hw_ops->irq_enable)
-		ret = core_data->hw_ops->irq_enable(core_data, !(!state));
+		ret = core_data->hw_ops->irq_enable(core_data, !(!state), true);
 
 	return ret;
 }
@@ -218,14 +225,9 @@ static int goodix_ts_mmi_methods_power(struct device *dev, int on) {
 
 	GET_GOODIX_DATA(dev);
 
-	if (on == TS_MMI_POWER_ON)
-		return goodix_ts_power_on(core_data);
-	else if(on == TS_MMI_POWER_OFF)
-		return goodix_ts_power_off(core_data);
-	else {
-		ts_err("Invalid power parameter %d.\n", on);
-		return -EINVAL;
-	}
+	core_data->ts_mmi_power_state = on;
+	schedule_delayed_work(&core_data->work, 0);
+	return 0;
 }
 
 static int goodix_ts_mmi_pre_suspend(struct device *dev) {
@@ -242,6 +244,68 @@ static int goodix_ts_mmi_pre_suspend(struct device *dev) {
 	 * and charger detector to turn off the work
 	 */
 	goodix_ts_esd_off(core_data);
+
+	return 0;
+}
+
+void goodix_ts_delay(unsigned int ms)
+{
+	if (ms < 20)
+		usleep_range(ms * 1000, ms * 1000);
+	else
+		msleep(ms);
+}
+
+static int goodix_ts_mmi_wait_for_ready(struct device *dev)
+{
+	struct platform_device *pdev;
+	struct goodix_ts_core *core_data;
+	struct goodix_ts_hw_ops *hw_ops;
+	struct goodix_ts_cmd cmd_ack;
+	struct goodix_ts_cmd ts_cmd;
+	struct goodix_ic_info_misc *misc;
+	int ret = 0;
+	int retry;
+
+	GET_GOODIX_DATA(dev);
+
+	hw_ops = core_data->hw_ops;
+	misc= &core_data->ic_info.misc;
+
+	if (misc->cmd_addr == 0x0000) {
+		ts_err("invalid cmd addr:0x0000, skip cmd");
+		return -EINVAL;
+	}
+
+	retry = GOODIX_RETRY_5;
+	while (retry--) {
+		ts_cmd.cmd = MMI_GOODIX_CMD_COORD;
+		ts_cmd.len = 4;
+		ret = core_data->hw_ops->send_cmd(core_data, &ts_cmd);
+		if (ret < 0)
+			return ret;
+
+		/* check command result */
+		ret = hw_ops->read(core_data, misc->cmd_addr,
+			cmd_ack.buf, sizeof(cmd_ack));
+		if (ret < 0) {
+			ts_err("failed read command ack, %d", ret);
+			return -EINVAL;
+		}
+		ts_info("cmd ack data %*ph",
+			 (int)sizeof(cmd_ack), cmd_ack.buf);
+
+		if ((cmd_ack.buf[0] == MMI_CONFIG_CMD_STATUS_PASS) &&
+			(cmd_ack.buf[1] == MMI_CMD_ACK_OK))
+			break;
+
+		goodix_ts_delay(10);
+	}
+
+	if (retry < 0) {
+		ts_err("wait for IC ready timeout!");
+		return -EINVAL;
+	}
 
 	return 0;
 }
@@ -296,10 +360,10 @@ static int goodix_ts_mmi_panel_state(struct device *dev,
 
 	switch (to) {
 	case TS_MMI_PM_GESTURE:
-		hw_ops->irq_enable(core_data, false);
+		hw_ops->irq_enable(core_data, false, true);
 		goodix_berlin_gesture_setup(core_data);
 		msleep(16);
-		hw_ops->irq_enable(core_data, true);
+		hw_ops->irq_enable(core_data, true, true);
 		enable_irq_wake(core_data->irq);
 		core_data->gesture_enabled = true;
 		break;
@@ -311,7 +375,7 @@ static int goodix_ts_mmi_panel_state(struct device *dev,
 			hw_ops->resume(core_data);
 		if (core_data->gesture_enabled) {
 			core_data->gesture_enabled = false;
-			hw_ops->irq_enable(core_data, true);
+			hw_ops->irq_enable(core_data, true, true);
 		}
 		break;
 	default:
@@ -358,7 +422,7 @@ static int goodix_ts_mmi_pre_resume(struct device *dev) {
 	atomic_set(&core_data->suspended, 0);
 	atomic_set(&core_data->post_suspended, 0);
 	if (core_data->gesture_enabled) {
-		core_data->hw_ops->irq_enable(core_data, false);
+		core_data->hw_ops->irq_enable(core_data, false, true);
 		disable_irq_wake(core_data->irq);
 	}
 
@@ -366,6 +430,7 @@ static int goodix_ts_mmi_pre_resume(struct device *dev) {
 }
 
 static int goodix_ts_mmi_post_resume(struct device *dev) {
+	int ret = 0;
 	struct platform_device *pdev;
 	struct goodix_ts_core *core_data;
 
@@ -378,6 +443,14 @@ static int goodix_ts_mmi_post_resume(struct device *dev) {
 	/* All IC status are cleared after reset */
 	memset(&core_data->set_mode, 0 , sizeof(core_data->set_mode));
 	/* TODO: restore data */
+	if (core_data->board_data.pocket_mode_ctrl && core_data->get_mode.pocket_mode) {
+		ret = goodix_ts_send_cmd(core_data, ENTER_POCKET_MODE_CMD, 5,
+			core_data->get_mode.pocket_mode , 0x00);
+		if (!ret) {
+			core_data->set_mode.pocket_mode = core_data->get_mode.pocket_mode;
+			ts_info("Success to %s pocket mode", core_data->get_mode.pocket_mode ? "Enable" : "Disable");
+		}
+	}
 	mutex_unlock(&core_data->mode_lock);
 
 	ts_info("Resume end");
@@ -540,6 +613,80 @@ static ssize_t goodix_ts_stowed_show(struct device *dev,
 	return scnprintf(buf, PAGE_SIZE, "0x%02x", core_data->set_mode.stowed);
 }
 
+static ssize_t goodix_ts_pocket_mode_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct platform_device *pdev;
+	struct goodix_ts_core *core_data;
+
+	dev = MMI_DEV_TO_TS_DEV(dev);
+	GET_GOODIX_DATA(dev);
+
+	ts_info("Pocket mode state = %d.\n", core_data->set_mode.pocket_mode);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", core_data->set_mode.pocket_mode);
+}
+
+static ssize_t goodix_ts_pocket_mode_store(struct device *dev,
+			struct device_attribute *attr, const char *buf, size_t size)
+{
+	int ret = 0;
+	unsigned long value = 0;
+	struct platform_device *pdev;
+	struct goodix_ts_core *core_data;
+
+	dev = MMI_DEV_TO_TS_DEV(dev);
+	GET_GOODIX_DATA(dev);
+
+	mutex_lock(&core_data->mode_lock);
+	ret = kstrtoul(buf, 0, &value);
+	if (ret < 0) {
+		ts_err("pocket_mode: Failed to convert value\n");
+		mutex_unlock(&core_data->mode_lock);
+		return -EINVAL;
+	}
+	switch (value) {
+		case 0x10:
+		case 0x20:
+			ts_info("touch pocket mode disable\n");
+			core_data->get_mode.pocket_mode = 0;
+			break;
+		case 0x11:
+		case 0x21:
+			ts_info("touch pocket mode enable\n");
+			core_data->get_mode.pocket_mode = 1;
+			break;
+		default:
+			ts_info("unsupport pocket mode type, value = %lu\n", value);
+			mutex_unlock(&core_data->mode_lock);
+			return -EINVAL;
+	}
+
+	if (core_data->set_mode.pocket_mode == core_data->get_mode.pocket_mode) {
+		ts_info("The value = %d is same, so not to write", core_data->get_mode.pocket_mode);
+		goto exit;
+	}
+
+	if (core_data->power_on == 0) {
+		ts_info("The touch is in sleep state, restore the value when resume\n");
+		goto exit;
+	}
+
+	ret = goodix_ts_send_cmd(core_data, ENTER_POCKET_MODE_CMD, 5,
+		core_data->get_mode.pocket_mode , 0x00);
+	if (ret < 0) {
+		ts_err("failed to send pocket mode cmd");
+		goto exit;
+	}
+
+	core_data->set_mode.pocket_mode = core_data->get_mode.pocket_mode;
+	msleep(20);
+
+	ts_info("Success to %s pocket mode", core_data->get_mode.pocket_mode ? "Enable" : "Disable");
+exit:
+	mutex_unlock(&core_data->mode_lock);
+	return size;
+}
+
 static int goodix_ts_mmi_extend_attribute_group(struct device *dev, struct attribute_group **group)
 {
 	int idx = 0;
@@ -554,6 +701,9 @@ static int goodix_ts_mmi_extend_attribute_group(struct device *dev, struct attri
 
 	if (core_data->board_data.stowed_mode_ctrl)
 		ADD_ATTR(stowed);
+
+	if (core_data->board_data.pocket_mode_ctrl)
+		ADD_ATTR(pocket_mode);
 
 	if (idx) {
 		ext_attributes[idx] = NULL;
@@ -584,12 +734,32 @@ static struct ts_mmi_methods goodix_ts_mmi_methods = {
 	/* vendor specific attribute group */
 	.extend_attribute_group = goodix_ts_mmi_extend_attribute_group,
 	/* PM callback */
+	.wait_for_ready = goodix_ts_mmi_wait_for_ready,
 	.pre_suspend = goodix_ts_mmi_pre_suspend,
 	.panel_state = goodix_ts_mmi_panel_state,
 	.post_suspend = goodix_ts_mmi_post_suspend,
 	.pre_resume = goodix_ts_mmi_pre_resume,
 	.post_resume = goodix_ts_mmi_post_resume,
 };
+
+static void ts_mmi_worker_func(struct work_struct *w)
+{
+	struct delayed_work *dw =
+		container_of(w, struct delayed_work, work);
+	struct goodix_ts_core *core_data =
+		container_of(dw, struct goodix_ts_core, work);
+
+	if (core_data->ts_mmi_power_state == TS_MMI_POWER_ON)
+	{
+		goodix_ts_power_on(core_data);
+	}
+	else if (core_data->ts_mmi_power_state == TS_MMI_POWER_OFF)
+	{
+		goodix_ts_power_off(core_data);
+	} else {
+		ts_err("Invalid power parameter %d.\n", core_data->ts_mmi_power_state);
+	}
+}
 
 int goodix_ts_mmi_dev_register(struct platform_device *pdev) {
 	int ret;
@@ -600,6 +770,8 @@ int goodix_ts_mmi_dev_register(struct platform_device *pdev) {
 		ts_err("Failed to get driver data");
 		return -ENODEV;
 	}
+
+	INIT_DELAYED_WORK(&core_data->work, ts_mmi_worker_func);
 	mutex_init(&core_data->mode_lock);
 	ret = ts_mmi_dev_register(core_data->bus->dev, &goodix_ts_mmi_methods);
 	if (ret) {

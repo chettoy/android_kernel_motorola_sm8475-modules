@@ -33,6 +33,10 @@ struct goodix_device_manager goodix_devices;
 #define PINCTRL_STATE_ACTIVE    "cli_pmx_ts_active"
 #define PINCTRL_STATE_SUSPEND   "cli_pmx_ts_suspend"
 
+#ifdef CONFIG_GTP_MANUAL_CS
+int cs_gpio;
+#endif
+
 static void goodix_device_manager_init(void)
 {
 	if (goodix_devices.initilized)
@@ -243,7 +247,7 @@ static ssize_t goodix_ts_send_cfg_store(struct device *dev,
 	if (buf[0] != '1')
 		return -EINVAL;
 
-	hw_ops->irq_enable(core_data, false);
+	hw_ops->irq_enable(core_data, false, true);
 
 	ret = request_firmware(&cfg_img, GOODIX_DEFAULT_CFG_NAME, dev);
 	if (ret < 0) {
@@ -271,7 +275,7 @@ static ssize_t goodix_ts_send_cfg_store(struct device *dev,
 	}
 
 exit:
-	hw_ops->irq_enable(core_data, true);
+	hw_ops->irq_enable(core_data, true, true);
 	kfree(config);
 	if (cfg_img)
 		release_firmware(cfg_img);
@@ -466,9 +470,9 @@ static ssize_t goodix_ts_irq_info_store(struct device *dev,
 		return -EINVAL;
 
 	if (buf[0] != '0')
-		hw_ops->irq_enable(core_data, true);
+		hw_ops->irq_enable(core_data, true, true);
 	else
-		hw_ops->irq_enable(core_data, false);
+		hw_ops->irq_enable(core_data, false, true);
 	return count;
 }
 
@@ -818,6 +822,16 @@ static int goodix_parse_dt(struct device_node *node,
 		return -EINVAL;
 	}
 
+#ifdef CONFIG_GTP_MANUAL_CS
+	r = of_get_named_gpio(node, "cs,gpio", 0);
+	if (r < 0) {
+		ts_err("invalid cs-gpio in dt: %d", r);
+		return -EINVAL;
+	}
+	ts_info("get cs-gpio[%d] from dt", r);
+	cs_gpio = r;
+#endif
+
 	memset(board_data->avdd_name, 0, sizeof(board_data->avdd_name));
 	r = of_property_read_string(node, "goodix,avdd-name", &name_tmp);
 	if (!r) {
@@ -908,6 +922,11 @@ static int goodix_parse_dt(struct device_node *node,
 		"goodix,stowed-mode-ctrl");
 	if (board_data->stowed_mode_ctrl)
 		ts_info("Support goodix touch stowed mode");
+
+	board_data->pocket_mode_ctrl = of_property_read_bool(node,
+		"goodix,pocket-mode-ctrl");
+	if (board_data->pocket_mode_ctrl)
+		ts_info("Support goodix touch pocket mode");
 
 	ts_info("[DT]x:%d, y:%d, w:%d, p:%d sleep_enable:%d pen_enable:%d",
 		board_data->panel_max_x, board_data->panel_max_y,
@@ -1073,7 +1092,7 @@ static irqreturn_t goodix_ts_threadirq_func(int irq, void *data)
 	struct goodix_ts_esd *ts_esd = &core_data->ts_esd;
 	int ret;
 
-	disable_irq_nosync(core_data->irq);
+	hw_ops->irq_enable(core_data, false, false);
 	ts_esd->irq_status = true;
 	core_data->irq_trig_cnt++;
 
@@ -1085,6 +1104,7 @@ static irqreturn_t goodix_ts_threadirq_func(int irq, void *data)
 			atomic_read(&core_data->pm_resume), msecs_to_jiffies(700));
 		if (!ret) {
 			ts_err("system can't finish resuming procedure.");
+			hw_ops->irq_enable(core_data, true, false);
 			return IRQ_HANDLED;
 		}
 	}
@@ -1108,7 +1128,7 @@ static irqreturn_t goodix_ts_threadirq_func(int irq, void *data)
 			goodix_ts_report_gesture(core_data, ts_event);
 	}
 
-	enable_irq(core_data->irq);
+	hw_ops->irq_enable(core_data, true, false);
 	return IRQ_HANDLED;
 }
 
@@ -1326,6 +1346,18 @@ static int goodix_ts_gpio_setup(struct goodix_ts_core *core_data)
 			return r;
 		}
 	}
+
+#ifdef CONFIG_GTP_MANUAL_CS
+	if (cs_gpio > 0) {
+		r = devm_gpio_request_one(&core_data->pdev->dev,
+				cs_gpio,
+				GPIOF_OUT_INIT_HIGH, "ts_cs_gpio");
+		if (r < 0) {
+			ts_err("Failed to request cs-gpio, r:%d", r);
+			return r;
+		}
+	}
+#endif
 
 	return 0;
 }
@@ -1613,7 +1645,7 @@ static int goodix_ts_suspend(struct goodix_ts_core *core_data)
 	ts_info("Suspend start");
 	atomic_set(&core_data->suspended, 1);
 	/* disable irq */
-	hw_ops->irq_enable(core_data, false);
+	hw_ops->irq_enable(core_data, false, true);
 	goodix_ts_esd_off(core_data);
 
 	if (core_data->gesture_type) {
@@ -1621,7 +1653,7 @@ static int goodix_ts_suspend(struct goodix_ts_core *core_data)
 		ts_info("enter gesture mode[0x%x]", core_data->gesture_type);
 		// TODO: send 0 means enable all gesture type
 		hw_ops->gesture(core_data, 0);
-		hw_ops->irq_enable(core_data, true);
+		hw_ops->irq_enable(core_data, true, true);
 		enable_irq_wake(core_data->irq);
 	} else {
 		/* enter sleep mode or power off */
@@ -1650,7 +1682,7 @@ static int goodix_ts_resume(struct goodix_ts_core *core_data)
 
 	ts_info("Resume start");
 	atomic_set(&core_data->suspended, 0);
-	hw_ops->irq_enable(core_data, false);
+	hw_ops->irq_enable(core_data, false, true);
 
 	if (core_data->gesture_type) {
 		disable_irq_wake(core_data->irq);
@@ -1664,7 +1696,7 @@ static int goodix_ts_resume(struct goodix_ts_core *core_data)
 	}
 
 	/* enable irq */
-	hw_ops->irq_enable(core_data, true);
+	hw_ops->irq_enable(core_data, true, true);
 	/* open esd */
 	goodix_ts_esd_on(core_data);
 	ts_info("Resume end");
@@ -2001,6 +2033,8 @@ static int goodix_ts_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
+	spin_lock_init(&core_data->irq_lock);
+
 	core_data->hw_ops = goodix_get_hw_ops();
 	if (!core_data->hw_ops) {
 		ts_err("hw ops is NULL");
@@ -2111,7 +2145,7 @@ static int goodix_ts_remove(struct platform_device *pdev)
 	if (core_data->init_stage >= CORE_INIT_STAGE2) {
 		gesture_module_exit(core_data);
 		inspect_module_exit(core_data);
-		hw_ops->irq_enable(core_data, false);
+		hw_ops->irq_enable(core_data, false, true);
 	#if IS_ENABLED(CONFIG_FB)
 		fb_unregister_client(&core_data->fb_notifier);
 	#endif

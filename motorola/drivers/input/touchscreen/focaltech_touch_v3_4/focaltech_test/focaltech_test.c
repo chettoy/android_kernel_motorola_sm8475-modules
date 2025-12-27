@@ -44,7 +44,12 @@
 struct fts_test *fts_ftest;
 
 struct test_funcs *test_func_list[] = {
+#ifdef CONFIG_FTS_IC_FT3681
     &test_func_ft5662,
+#endif
+#ifdef CONFIG_FTS_IC_FT3683G
+    &test_func_ft5672,
+#endif
 };
 
 /*****************************************************************************
@@ -1209,6 +1214,7 @@ void show_data_mc_sc(int *data)
 #ifndef CONFIG_FTS_COMPATIBLE_WITH_GKI
 static int fts_test_save_test_data(char *file_name, char *data_buf, int len)
 {
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))
     struct file *pfile = NULL;
     char filepath[FILE_NAME_LENGTH] = { 0 };
     loff_t pos;
@@ -1244,6 +1250,7 @@ static int fts_test_save_test_data(char *file_name, char *data_buf, int len)
 #endif
 
     FTS_TEST_FUNC_EXIT();
+#endif
     return 0;
 }
 #else

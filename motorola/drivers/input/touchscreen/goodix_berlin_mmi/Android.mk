@@ -10,11 +10,19 @@ ifeq ($(DRM_PANEL_NOTIFICATIONS),true)
 endif
 
 ifeq ($(TOUCHSCREEN_GOODIX_BRL_SPI),true)
-ifeq ($(call is-board-platform-in-list,taro kalama parrot crow pineapple blair), true)
+ifeq ($(call is-board-platform-in-list,taro kalama parrot crow pineapple blair sun kera volcano), true)
 	KBUILD_OPTIONS += CONFIG_TOUCHSCREEN_GOODIX_BRL_SPI=y
 else
 	KERNEL_CFLAGS += CONFIG_TOUCHSCREEN_GOODIX_BRL_SPI=y
 endif
+endif
+
+ifeq ($(TARGET_BOARD_PLATFORM), sun)
+	KBUILD_OPTIONS += CHANGE_STACK_FRAME_SIZE=y
+endif
+
+ifeq ($(ADJUST_STACK_FRAME_SIZE), true)
+	KBUILD_OPTIONS += CHANGE_STACK_FRAME_SIZE=y
 endif
 
 ifeq ($(GTP_LIMIT_USE_SUPPLIER),true)
@@ -44,6 +52,10 @@ ifeq ($(TOUCHSCREEN_LAST_TIME),true)
 	KBUILD_OPTIONS += CONFIG_GTP_LAST_TIME=y
 endif
 
+ifeq ($(GTP_STYLUS_VSYNC),true)
+	KBUILD_OPTIONS += CONFIG_GTP_STYLUS_VSYNC=y
+endif
+
 ifeq ($(GTP_ENABLE_DDA_STYLUS),true)
 ifeq ($(MOTO_DDA_PASSIVE_STYLUS),true)
 	KBUILD_OPTIONS += CONFIG_MOTO_DDA_PASSIVE_STYLUS=y
@@ -70,6 +82,14 @@ endif
 
 ifeq ($(ENABLE_GTP_PALM_CANCEL),true)
 	KBUILD_OPTIONS += CONFIG_ENABLE_GTP_PALM_CANCEL=y
+endif
+
+ifeq ($(BOARD_KERNEL_VARIANT),perf)
+	KBUILD_OPTIONS += CONFIG_BUILD_KERNEL_VARIANT_PERF=y
+endif
+
+ifeq ($(TOUCH_HARDWARE_STATUS),true)
+	KBUILD_OPTIONS += CONFIG_TOUCH_HARDWARE_STATUS=y
 endif
 
 include $(CLEAR_VARS)

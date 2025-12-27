@@ -90,6 +90,8 @@
 #define FTS_GESTURE_POINTS_MAX              6
 #define FTS_GESTURE_DATA_LEN               (FTS_GESTURE_POINTS_MAX * 4 + 4)
 
+#define FTS_GESTURE_MODE		    0xCF /* 0: disbale; 1: single tap: 2: double tap; 3: single and double tap */
+
 #define FTS_SIZE_PEN                        15
 #define FTS_SIZE_DEFAULT                    15
 
@@ -117,6 +119,10 @@
 
 #define FTS_MAX_TOUCH_BUF                   4096
 
+#define MAX_REPORT_RATE_CONFIG 12
+#define FTS_CMD_REPORT_RATE_ADDR          0xCE
+#define REPORT_RATE_CMD_120HZ 1
+#define REPORT_RATE_CMD_240HZ 0
 
 /*****************************************************************************
 *  Alternative mode (When something goes wrong, the modules may be able to solve the problem.)
@@ -128,6 +134,9 @@
 #define FTS_TIMEOUT_COMERR_PM               700
 
 #define FTS_REG_RETRY_TIMES                 5
+
+#define FTS_TOUCH_HIRES_X                   4
+#define FTS_HI_RES_X_MAX                    16
 
 /*****************************************************************************
 * Private enumerations, structures and unions using typedef
@@ -164,6 +173,13 @@ struct fts_ts_platform_data {
     u32 x_min;
     u32 y_min;
     u32 max_touch_number;
+    bool interpolation_ctrl;
+    bool report_rate_ctrl;
+};
+
+struct fts_mode_info {
+    int interpolation;
+    int report_rate_mode;
 };
 
 struct ts_event {
@@ -210,6 +226,10 @@ struct fts_ts_data {
     struct ts_ic_info ic_info;
     struct workqueue_struct *ts_workqueue;
     struct work_struct fwupg_work;
+#if defined(CONFIG_FTS_MULTI_FW)
+    struct work_struct fwload_work;
+    struct work_struct fwrecover_work;
+#endif
     struct delayed_work esdcheck_work;
     struct delayed_work prc_work;
     struct work_struct resume_work;
@@ -224,6 +244,7 @@ struct fts_ts_data {
     int log_level;
     int fw_is_running;      /* confirm fw is running when using spi:default 0 */
     int dummy_byte;
+    int refresh_rate;
 #if defined(CONFIG_PM) && FTS_PATCH_COMERR_PM
     struct completion pm_completion;
     bool pm_suspend;
@@ -277,6 +298,7 @@ struct fts_ts_data {
 #endif
 #if defined(CONFIG_FB) || defined(CONFIG_DRM)
     struct notifier_block fb_notif;
+    void *notifier_cookie;
 #elif defined(CONFIG_HAS_EARLYSUSPEND)
     struct early_suspend early_suspend;
 #endif
@@ -290,6 +312,19 @@ struct fts_ts_data {
 #ifdef FTS_LAST_TIME_EN
 	ktime_t last_event_time;
 #endif
+
+#if defined(CONFIG_INPUT_TOUCHSCREEN_MMI)
+	struct ts_mmi_class_methods *imports;
+#endif
+
+#if defined(CONFIG_FTS_DOUBLE_TAP_CONTROL)
+	u8 gesture_cmd;
+#endif
+
+    u32 high_resolution_num;
+    struct mutex mode_lock;
+    struct fts_mode_info set_mode;
+    struct fts_mode_info get_mode;
 };
 
 #ifdef FTS_SET_TOUCH_STATE
@@ -316,6 +351,7 @@ enum _FTS_TOUCH_ETYPE {
     TOUCH_EVENT_NUM = 0x02,
     TOUCH_EXTRA_MSG = 0x08,
     TOUCH_PEN = 0x0B,
+    TOUCH_DEFAULT_HI_RES = 0x82,
     TOUCH_GESTURE = 0x80,
     TOUCH_FW_INIT = 0x81,
     TOUCH_IGNORE = 0xFE,
@@ -330,6 +366,20 @@ enum _FTS_STYLUS_ETYPE {
 enum _FTS_GESTURE_BMODE {
     GESTURE_BM_REG,
     GESTURE_BM_TOUCH,
+};
+
+struct report_rate_config {
+	bool interpolation_flag; //if enable interpolation report rate
+	u16 refresh_rate[2]; //display refresh rate
+	u16 report_rate; //touch report rate
+	u16 command; //report rate switch command
+};
+
+struct focaltech_ic_report_rate_config {
+	u8 rate_config_count; //the count of report rate combination
+	bool refresh_rate_ctrl; //if support report rate change according to refresh rate
+	bool interpolation_ctrl; //if support interpolation report rate
+	struct report_rate_config report_rate_info[MAX_REPORT_RATE_CONFIG];
 };
 
 /*****************************************************************************
@@ -355,6 +405,14 @@ void fts_gesture_recovery(struct fts_ts_data *ts_data);
 int fts_gesture_readdata(struct fts_ts_data *ts_data, u8 *data);
 int fts_gesture_suspend(struct fts_ts_data *ts_data);
 int fts_gesture_resume(struct fts_ts_data *ts_data);
+#endif
+
+/* Pinctrl functions */
+#if FTS_PINCTRL_EN
+int fts_pinctrl_init(struct fts_ts_data *ts);
+int fts_pinctrl_select_normal(struct fts_ts_data *ts);
+int fts_pinctrl_select_suspend(struct fts_ts_data *ts);
+int fts_pinctrl_select_release(struct fts_ts_data *ts);
 #endif
 
 /* Apk and functions */
@@ -390,12 +448,21 @@ void fts_prc_queue_work(struct fts_ts_data *ts_data);
 /* FW upgrade */
 int fts_fwupg_init(struct fts_ts_data *ts_data);
 int fts_fwupg_exit(struct fts_ts_data *ts_data);
+#ifndef CONFIG_FTS_MULTI_FW
 int fts_fw_resume(bool need_reset);
 int fts_fw_recovery(void);
+#endif
+
 int fts_upgrade_bin(char *fw_name, bool force);
 int fts_enter_test_environment(bool test_state);
-int fts_fw_update_vendor_name(const char* name);
 
+#ifdef CONFIG_FTS_MULTI_FW
+int fts_enter_normal_fw(void);
+int fts_fw_recovery(void);
+int fts_enter_gesture_fw(void);
+#else
+int fts_fw_update_vendor_name(const char* name);
+#endif
 /* Other */
 int fts_reset_proc(int hdelayms);
 int fts_check_cid(struct fts_ts_data *ts_data, u8 id_h);
@@ -408,4 +475,6 @@ int fts_ex_mode_recovery(struct fts_ts_data *ts_data);
 
 void fts_irq_disable(void);
 void fts_irq_enable(void);
+
+int fts_mmi_get_report_rate(struct fts_ts_data *ts_data);
 #endif /* __LINUX_FOCALTECH_CORE_H__ */

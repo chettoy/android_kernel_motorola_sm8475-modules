@@ -254,13 +254,25 @@
 #define SX937X_COMPENSATION_CONTROL           0x0000000E
 #define SX937X_ENTER_CONTROL                  0x0000000D
 #define SX937X_EXIT_CONTROL                   0x0000000C
+#define MAX_CHANNEL_NUMBER 8
+#define CHECK_TIMES  3
 
+#define NUM_PHASES 8
 
 typedef enum{
 	SX937X_POWER_SUPPLY_TYPE_PMIC_LDO,	// pmic LDO
 	SX937X_POWER_SUPPLY_TYPE_ALWAYS_ON, // power-supply always on
 	SX937X_POWER_SUPPLY_TYPE_EXTERNAL_LDO,	// external LDO
 }sx937x_power_supply_type_t;
+
+typedef enum{
+	PROX_STATE_0,
+	PROX_STATE_1,
+	PROX_STATE_2,
+	PROX_STATE_3,
+	PROX_STATE_4,
+}PROX_STATE;
+
 
 /**************************************
  *   define platform data
@@ -413,6 +425,12 @@ static struct _buttonInfo psmtcButtons[] =
 	
 };
 
+typedef struct sx937x_esd_data{
+	int check_round;
+	u32 ph_useful[MAX_CHANNEL_NUMBER][CHECK_TIMES];
+	int err_cnt;
+}sx937x_esd_data_t;
+
 typedef struct sx937x_platform_data
 {
 	const char *dbg_name;
@@ -420,16 +438,19 @@ typedef struct sx937x_platform_data
 	int i2c_reg_num;
         int flip_reg_num;
         int flip_far_reg_num;
+        int default_reg_num;
         int dev_id;
 	struct smtc_reg_data *pi2c_reg;
         struct smtc_reg_data *flip_near_reg;
 	struct smtc_reg_data *flip_far_reg;
+	struct smtc_reg_data *default_setup_reg;
 	int irq_gpio;
 	int ref_phase_a;
 	int ref_phase_b;
 	int ref_phase_c;
     //vdd
 	struct regulator *cap_vdd;
+	sx937x_esd_data_t  esd_data;
 	bool cap_vdd_en;
 	int eldo_gpio;
 	bool eldo_vdd_en;
@@ -442,7 +463,8 @@ typedef struct sx937x_platform_data
 	pbuttonInformation_t pbuttonInformation;
 	bool reinit_on_cali;
 	bool reinit_on_i2c_failure;
-
+	bool state_flip_open;
+	int capsensor_upd_support;
 	int (*get_is_nirq_low)(void);
 
 	int     (*init_platform_hw)(struct i2c_client *client);

@@ -377,6 +377,8 @@ static int ether_queue_out(struct usb_request *req ,
 	int ret;
 	unsigned int size;
 
+	if (!context->bulk_out)
+		return -EINVAL;
 	size = ALIGN(USB_MTU + NET_IP_ALIGN, context->bulk_out->maxpacket);
 	skb = alloc_skb(size, GFP_ATOMIC);
 	if (!skb) {
@@ -1000,6 +1002,22 @@ static int usbnet_ctrlrequest(
 	return rc;
 }
 
+#if (KERNEL_VERSION(6, 6, 30) <= LINUX_VERSION_CODE)
+static bool usbnet_req_match(struct usb_function *f,
+			       const struct usb_ctrlrequest *ctrl,
+			       bool config0)
+{
+	if ((ctrl->bRequestType & USB_TYPE_MASK) == USB_TYPE_VENDOR) {
+		if (ctrl->bRequest == USBNET_SET_IP_ADDRESS ||
+			ctrl->bRequest == USBNET_SET_SUBNET_MASK ||
+			ctrl->bRequest == USBNET_SET_HOST_IP) {
+			return true;
+		}
+	}
+	return false;
+}
+#endif
+
 static void usbnet_disable(struct usb_function *f)
 {
 	struct usbnet_device  *dev = usbnet_func_to_dev(f);
@@ -1224,7 +1242,11 @@ static struct usb_function *usbnet_alloc(struct usb_function_instance *fi)
 	dev->function.strings = usbnet_strings;
 	dev->function.setup = usbnet_ctrlrequest;
 	dev->function.free_func = usbnet_free_func;
+#if (KERNEL_VERSION(6, 6, 30) > LINUX_VERSION_CODE)
 	fi->f = &dev->function;
+#else
+	dev->function.req_match = usbnet_req_match;
+#endif
 	return &dev->function;
 }
 

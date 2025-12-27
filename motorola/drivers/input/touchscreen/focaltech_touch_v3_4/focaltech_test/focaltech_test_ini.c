@@ -225,6 +225,7 @@ static int fts_atoi(char *nptr)
     return (int)fts_atol(nptr);
 }
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))
 static int fts_test_get_ini_size(char *config_name)
 {
     struct file *pfile = NULL;
@@ -308,9 +309,11 @@ static int fts_test_read_ini_data(char *config_name, char *config_buf)
     FTS_TEST_FUNC_EXIT();
     return 0;
 }
+#endif
 
 static int __maybe_unused fts_test_get_ini_default(struct ini_data *ini, char *fwname)
 {
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))
     int ret = 0;
     int inisize = 0;
 
@@ -337,6 +340,10 @@ static int __maybe_unused fts_test_get_ini_default(struct ini_data *ini, char *f
     ini->data[inisize] = '\n';  /* last line is null line */
 
     return 0;
+#else
+    FTS_TEST_INFO("not support vfs_read to get ini file");
+    return -EINVAL;
+#endif
 }
 
 static int fts_test_get_ini_via_request_firmware(struct ini_data *ini, char *fwname)
@@ -1125,6 +1132,10 @@ static void print_thr_mc_sc(void)
     FTS_TEST_DBG("short_cc:%d", thr->basic.short_cc);
     FTS_TEST_DBG("panel_differ_min:%d", thr->basic.panel_differ_min);
     FTS_TEST_DBG("panel_differ_max:%d", thr->basic.panel_differ_max);
+#if defined(CONFIG_FTS_NOISE_TEST_P2P)
+    FTS_TEST_DBG("noise_max:%d,frame_num:%d,noise_mode:%d,polling:%d", thr->basic.noise_max,
+                 thr->basic.noise_framenum, thr->basic.noise_mode, thr->basic.noise_polling);
+#endif
 
     print_buffer(thr->rawdata_h_min, tdata->node.node_num, tdata->node.rx_num);
     print_buffer(thr->rawdata_h_max, tdata->node.node_num, tdata->node.rx_num);

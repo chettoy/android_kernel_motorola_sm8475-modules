@@ -229,14 +229,14 @@ static struct reg_default sc8541_reg_init_val[] = {
 
 static struct reg_default nu2115_reg_init_val[] = {
 	{NU2115_BATOVP,	    0x45},//0x47:4550mV 0x45:4580mv
-	{NU2115_BATOVP_ALM,	0x42},//0x3f:4470mV 0x42:4500mv
+	{NU2115_BATOVP_ALM,	0x80},//0x3f:4470mV 0x42:4500mv
 	{NU2115_BATOCP,	    0xDA},//0xDA:disable for dual  11A//0x46:7000mA for standalone
-	{NU2115_BATOCP_ALM,	0x6B},//0x6B:12700mA
+	{NU2115_BATOCP_ALM,	0x80},//0x6B:12700mA
 	{NU2115_BATUCP_ALM,	0x80},//0x28:default 2a
-	{NU2115_AC1PROT,	0x06},//default
-	{NU2115_AC2PROT,	0x07},//default
-	{NU2115_BUSOVP,	    0x3C},//0x3C:12000mv
-	{NU2115_BUSOVP_ALM,	0x32},//0X32:11000mV
+	{NU2115_AC1PROT,	0x06},//0x06:13000mv
+	{NU2115_AC2PROT,	0x06},//0x06:13000mv
+	{NU2115_BUSOVP,	    0x2D},//0x2D:10500mv
+	{NU2115_BUSOVP_ALM,	0x80},//0X32:11000mV
 	{NU2115_BUSOCP,	    0x06},//0X06:4000mA
 	{NU2115_BUSOCP_ALM,	0x8C},//0X8C:4000mA disable
 	{NU2115_CON_STAT,	0x00},
@@ -247,17 +247,17 @@ static struct reg_default nu2115_reg_init_val[] = {
 	{NU2115_INT_MASK,	0x00},//default
 	{NU2115_FLT_MASK,	0x00},//default
 	{NU2115_ADC_CTRL,	0x00},//default mean {NU2115_ADC_CONTROL1,	0x00}
-	{NU2115_ADC_FN_DIS,	0x07},//0x06:TSBUS TSBAT mean {NU2115_ADC_CONTROL2,	0x06}
+	{NU2115_ADC_FN_DIS,	0x8F},//0x06:TSBUS TSBAT mean {NU2115_ADC_CONTROL2,	0x06}
 	{NU2115_TSBUS_FLT,	0x15},
 	{NU2115_TSBAT_FLG,	0x15},
 	{NU2115_TDIE_ALM,	0x48},//0x48:60C
-	{NU2115_IBUS_UCP,	0x48},
-	{NU2115_VAC12PRET,	0x01},
-	{NU2115_ACDRV12_CTRL,   0x80},
-	{NU2115_P2VOUT_UOVP,    0x50},
-	{NU2115_DEGLITC_REG,    0x09},
-	{NU2115_CP_OPTION,      0x08},
-	{NU2115_CP_OPTION1,     0x09},
+	{NU2115_IBUS_UCP,	0xE2},
+	{NU2115_VAC12PRET,	0x90},
+	{NU2115_ACDRV12_CTRL,   0x40},
+	{NU2115_P2VOUT_UOVP,    0x70},
+	{NU2115_DEGLITC_REG,    0x0D},
+	{NU2115_CP_OPTION,      0x00},
+	{NU2115_CP_OPTION1,     0xC0},
 	{NU2115_CP_OPTION2,     0x27},
 };
 
@@ -318,16 +318,16 @@ static struct reg_default sc8541_reg_defs[] = {
 
 static struct reg_default nu2115_reg_defs[] = {
 	{NU2115_BATOVP,        0x37},
-	{NU2115_BATOVP_ALM,    0x2F},
-	{NU2115_BATOCP,        0x41},
-	{NU2115_BATOCP_ALM,    0x3E},
+	{NU2115_BATOVP_ALM,    0x80},
+	{NU2115_BATOCP,        0xDA},
+	{NU2115_BATOCP_ALM,    0x80},
 	{NU2115_BATUCP_ALM,    0x80},
 	{NU2115_AC1PROT,       0x06},
-	{NU2115_AC2PROT,       0x07},
-	{NU2115_BUSOVP,        0x1E},
-	{NU2115_BUSOVP_ALM,    0x1D},
+	{NU2115_AC2PROT,       0x06},
+	{NU2115_BUSOVP,        0x2D},
+	{NU2115_BUSOVP_ALM,    0x80},
 	{NU2115_BUSOCP,        0x01},
-	{NU2115_BUSOCP_ALM,    0x00},
+	{NU2115_BUSOCP_ALM,    0x8C},
 	{NU2115_VOUTOVP,       0x00},
 	{NU2115_CON_STAT,      0x00},
 	{NU2115_CTRL_REG,      0x20},
@@ -339,7 +339,7 @@ static struct reg_default nu2115_reg_defs[] = {
 	{NU2115_FLT_FLAG,      0x00},
 	{NU2115_FLT_MASK,      0x00},
 	{NU2115_ADC_CTRL,      0x00},
-	{NU2115_ADC_FN_DIS,    0x07},
+	{NU2115_ADC_FN_DIS,    0x8F},
 	{NU2115_IBUS_ADC_MSB,  0x00},
 	{NU2115_IBUS_ADC_LSB,  0x00},
 	{NU2115_VBUS_ADC_MSB,  0x00},
@@ -363,14 +363,14 @@ static struct reg_default nu2115_reg_defs[] = {
 	{NU2115_TSBUS_FLT,     0x15},
 	{NU2115_TSBAT_FLG,     0x15},
 	{NU2115_TDIE_ALM,      0xC3},
-	{NU2115_IBUS_UCP,      0xE0},
+	{NU2115_IBUS_UCP,      0xE2},
 	{NU2115_VAC12PRET,     0x01},
 	{NU2115_ACDRV12_CTRL,  0x80},
 	{NU2115_DEV_INFO,      0x90},
-	{NU2115_P2VOUT_UOVP,   0x50},
-	{NU2115_DEGLITC_REG,   0x09},
-	{NU2115_CP_OPTION,     0x08},
-	{NU2115_CP_OPTION1,    0x00},
+	{NU2115_P2VOUT_UOVP,   0x70},
+	{NU2115_DEGLITC_REG,   0x0D},
+	{NU2115_CP_OPTION,     0x00},
+	{NU2115_CP_OPTION1,    0xC0},
 	{NU2115_CP_OPTION2,    0x27},
 };
 
@@ -396,10 +396,12 @@ static int sc8541_set_adc_enable(struct sc8541_device *bq, bool enable)
 	dev_notice(bq->dev, "%s %d", __FUNCTION__, enable);
 
 	if (bq->part_no == NU2115_PART_NO) {
-		if (enable)
+		if (enable) {
 			ret = regmap_update_bits(bq->regmap, NU2115_ADC_CTRL,
 					NU2115_ADC_EN, NU2115_ADC_EN);
-		else
+			/* when adc coolect after 20ms */
+			msleep(20);
+		} else
 			ret = regmap_update_bits(bq->regmap, NU2115_ADC_CTRL,
 					NU2115_ADC_EN, 0);
 	} else {
@@ -466,12 +468,22 @@ static int sc8541_set_chg_en(struct sc8541_device *bq, bool en_chg)
 	int ret;
 
 	if (bq->part_no == NU2115_PART_NO) {
-		if (en_chg)
+		if (en_chg) {
+			ret = regmap_update_bits(bq->regmap, NU2115_P2VOUT_UOVP,
+						NU2115_PMID2VOUT_OVP, NU2115_PMID2VOUT_OVP12P5);
+
 			ret = regmap_update_bits(bq->regmap, NU2115_CHGCTRL,
 						NU2115_CHG_EN, NU2115_CHG_EN);
-		else
+			/* Set PMID2OVP 12.5% to 7.5% after 30ms */
+			msleep(30);
+			ret = regmap_update_bits(bq->regmap, NU2115_P2VOUT_UOVP,
+						NU2115_PMID2VOUT_OVP, NU2115_PMID2VOUT_OVP7P5);
+
+		} else {
 			ret = regmap_update_bits(bq->regmap, NU2115_CHGCTRL,
 					NU2115_CHG_EN, en_chg);
+		}
+
 		if (ret)
 			return ret;
 	} else {
@@ -518,6 +530,33 @@ static int sc8541_is_chg_en(struct sc8541_device *bq, bool *en_chg)
 		*en_chg = (!!(chg_ctrl_2 & SC8541_CHG_EN) &
 			 !!(stat5 & SC8541_SWITCHING_STAT));
 	}
+
+	return 0;
+}
+
+static int sc8541_set_otg_en(struct sc8541_device *bq, bool en_otg)
+{
+	int ret = 0;
+
+	if (bq->part_no != NU2115_PART_NO) {
+		dev_err(bq->dev," ic is not NU2115 charger!");
+		return ret;
+	}
+
+	if (en_otg) {
+		ret = regmap_update_bits(bq->regmap, NU2115_VAC12PRET,
+						NU2115_EN_OTG, NU2115_EN_OTG);
+		ret += regmap_update_bits(bq->regmap, NU2115_ACDRV12_CTRL,
+						NU2115_EN_ACRDV2, NU2115_EN_ACRDV2);
+	} else {
+		ret = regmap_update_bits(bq->regmap, NU2115_VAC12PRET,
+						NU2115_EN_OTG, en_otg);
+		ret += regmap_update_bits(bq->regmap, NU2115_ACDRV12_CTRL,
+						NU2115_EN_ACRDV2, NU2115_EN_ACRDV2);
+	}
+
+	if (ret)
+		return ret;
 
 	return 0;
 }
@@ -788,10 +827,12 @@ static int nu2115_get_state(struct sc8541_device *bq,
 	ret = regmap_read(bq->regmap, NU2115_INT_STAT, &alm_stat);
 	if (ret)
 		return ret;
-	
+
 	ret = regmap_read(bq->regmap, NU2115_FLT_FLAG, &flt_flag);
 	if (ret)
 		return ret;
+	/* delay 150ms for NU2115_CON_STAT out after setting cp enable */
+	msleep(150);
 
 	ret = regmap_read(bq->regmap, NU2115_CON_STAT, &stat5);
 		if (ret)
@@ -1679,6 +1720,11 @@ static int sc8541_iio_write_raw(struct iio_dev *indio_dev,
 		pr_info("[%s] set_chg_en: %s\n", bq->model_name,
 				val1 ? "enable" : "disable");
 		break;
+	case PSY_IIO_MMI_OTG_ENABLE:
+		sc8541_set_otg_en(bq, !!val1);
+		pr_info("[%s] set_otg_en: %s\n", bq->model_name,
+				!!val1 ? "enable" : "disable");
+		break;
 	case PSY_IIO_ONLINE:
 		sc8541_set_present(bq, !!val1);
 		pr_info("[%s] set_present :%d\n", bq->model_name, val1);
@@ -1742,6 +1788,28 @@ static int sc8541_iio_read_raw(struct iio_dev *indio_dev,
 			} else
 				pr_err("[%s] read charge enable err\n", bq->model_name);
 		}
+		break;
+	case PSY_IIO_MMI_OTG_ENABLE:
+		if (bq->part_no == NU2115_PART_NO) {
+			rc = regmap_read(bq->regmap, NU2115_VAC12PRET, &result);
+			if (!rc) {
+				*val1 = !!(result & NU2115_EN_OTG);
+				pr_info("[%s] read otg enable:%d\n", bq->model_name, *val1);
+			}
+		} else {
+			rc = regmap_read(bq->regmap, SC8541_CHRGR_CTRL_2, &result);
+			if (!rc) {
+				*val1 = !!(result & SC8541_EN_OTG);
+				pr_info("[%s] read otg enable:%d\n", bq->model_name, *val1);
+			}
+		}
+		break;
+	case PSY_IIO_MMI_CP_CHIP_ID:
+		if (bq->part_no == NU2115_PART_NO)
+			*val1 = NU2115_PART_NO;
+
+		if (bq->part_no == SC8541_PART_NO)
+			*val1 = SC8541_PART_NO;
 		break;
 	case PSY_IIO_ONLINE:
 		if (bq->part_no == NU2115_PART_NO) {

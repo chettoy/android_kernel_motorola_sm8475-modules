@@ -216,7 +216,7 @@ static ssize_t rw_bdev(struct block_device *bdev, void *buf, size_t count, int o
 {
 	int ret;
 
-	ret = utags_submit_bio(bdev, buf, 1 << get_order(count), opf);
+	ret = utags_submit_bio(bdev, buf, DIV_ROUND_UP(count, PAGE_SIZE), opf);
 	return  ret < 0 ? ret : count;
 }
 
@@ -464,8 +464,14 @@ static int open_utags(struct blkdev *cb)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) || defined(CONFIG_MMI_UTAG_RW_BIO)
 	struct block_device *bdev = NULL;
 
-	bdev = blkdev_get_by_path(cb->name, FMODE_READ | FMODE_WRITE, cb);
+	if (cb->bdev != NULL)
+		return 0;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+	bdev = blkdev_get_by_path(cb->name, FMODE_READ | FMODE_WRITE, cb, NULL);
+#else
+	bdev = blkdev_get_by_path(cb->name, FMODE_READ | FMODE_WRITE, cb);
+#endif
 	if (IS_ERR(bdev)) {
 		pr_err("(%s) failed get block device\n", cb->name);
 		return -EIO;
@@ -1382,6 +1388,11 @@ static int read_utag(struct seq_file *file, void *v)
 		goto free_tags_exit;
 	}
 
+	if (tag->payload == NULL) {
+		pr_err("utag [%s] payload is empty\n", utag_name);
+		goto free_tags_exit;
+	}
+
 	switch (proc->mode) {
 	case OUT_ASCII:
 		seq_printf(file, "%s", (char *)tag->payload);
@@ -1803,10 +1814,12 @@ static int reload_show(struct seq_file *file, void *v)
 {
 	struct ctrl *ctrl = (struct ctrl *)file->private;
 
-	if (!ctrl)
+	if (!ctrl) {
 		pr_err("no control data set\n");
-	else
-		seq_printf(file, "%c\n", ctrl->reload);
+		return -EIO;
+	}
+
+	seq_printf(file, "%c\n", ctrl->reload);
 
 	pr_debug("[%s] %c\n", ctrl->dir_name, ctrl->reload);
 	return 0;
@@ -2071,7 +2084,7 @@ need_no_expansion:
 static int utags_dt_init(struct platform_device *pdev)
 {
 	int rc;
-	const char *path_ptr;
+	const char *path_ptr = NULL;
 	struct device_node *node = pdev->dev.of_node;
 	struct ctrl *ctrl;
 
@@ -2086,7 +2099,8 @@ static int utags_dt_init(struct platform_device *pdev)
 	rc = of_property_read_string(node, "mmi,backup-utags", &path_ptr);
 	if (rc)
 		pr_info("backup storage path not provided\n");
-	utags_bootdevice_expand(&ctrl->backup.name, path_ptr);
+	else
+		utags_bootdevice_expand(&ctrl->backup.name, path_ptr);
 
 	ctrl->dir_name = DEFAULT_ROOT;
 	rc = of_property_read_string(node, "mmi,dir-name", &ctrl->dir_name);
@@ -2212,10 +2226,34 @@ static int utags_remove(struct platform_device *pdev)
 	remove_proc_subtree(ctrl->dir_name, NULL);
 	destroy_workqueue(ctrl->load_queue);
 	destroy_workqueue(ctrl->store_queue);
-	if (ctrl->main.filep)
+	if (ctrl->main.filep) {
 		filp_close(ctrl->main.filep, NULL);
-	if (ctrl->backup.filep)
+		ctrl->main.filep = NULL;
+	}
+	if (ctrl->backup.filep) {
 		filp_close(ctrl->backup.filep, NULL);
+		ctrl->backup.filep = NULL;
+	}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+	if (ctrl->main.bdev) {
+		blkdev_put(ctrl->main.bdev, &ctrl->main);
+		ctrl->main.bdev = NULL;
+	}
+	if (ctrl->backup.bdev) {
+		blkdev_put(ctrl->backup.bdev, &ctrl->backup);
+		ctrl->backup.bdev = NULL;
+	}
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) || defined(CONFIG_MMI_UTAG_RW_BIO)
+	if (ctrl->main.bdev) {
+		blkdev_put(ctrl->main.bdev, FMODE_READ | FMODE_WRITE);
+		ctrl->main.bdev = NULL;
+	}
+	if (ctrl->backup.bdev) {
+		blkdev_put(ctrl->backup.bdev, FMODE_READ | FMODE_WRITE);
+		ctrl->backup.bdev = NULL;
+	}
+#endif
 
 	if (ctrl->main.name)
 		kfree(ctrl->main.name);

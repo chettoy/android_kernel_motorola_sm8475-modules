@@ -53,6 +53,12 @@
 #include "focaltech_core.h"
 #include <linux/mmi_device.h>
 
+#ifdef NDT_DATA_EN
+#include <linux/kernel.h>
+#include <linux/random.h>
+extern int use_ndt_aw8680x;
+#endif
+
 #ifdef CONFIG_INPUT_TOUCHSCREEN_MMI
 extern int fts_mmi_dev_register(struct fts_ts_data *ts_data);
 extern void fts_mmi_dev_unregister(struct fts_ts_data *ts_data);
@@ -338,6 +344,9 @@ static int fts_get_ic_information(struct fts_ts_data *ts_data)
 #if defined(CONFIG_INPUT_FOCALTECH_0FLASH_MMI_IC_NAME_FT3519)
     chip_id[0] = 0x54;
     chip_id[1] = 0x5E;
+#elif defined(CONFIG_INPUT_FOCALTECH_0FLASH_MMI_IC_NAME_FT3519t)
+    chip_id[0] = 0x54;
+    chip_id[1] = 0x5E;
 #else
     chip_id[0] = 0x54;
     chip_id[1] = 0x5C;
@@ -462,6 +471,14 @@ static int fts_input_report_b(struct fts_ts_data *data)
     u32 max_touch_num = data->pdata->max_touch_number;
     struct ts_event *events = data->events;
 
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+    unsigned int tool_type;
+#endif
+
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+    tool_type = data->palm_on ? MT_TOOL_PALM : MT_TOOL_FINGER;
+#endif
+
     for (i = 0; i < data->touch_point; i++) {
         if (fts_input_report_key(data, i) == 0) {
             continue;
@@ -471,7 +488,11 @@ static int fts_input_report_b(struct fts_ts_data *data)
         input_mt_slot(data->input_dev, events[i].id);
 
         if (EVENT_DOWN(events[i].flag)) {
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+            input_mt_report_slot_state(data->input_dev, tool_type, true);
+#else
             input_mt_report_slot_state(data->input_dev, MT_TOOL_FINGER, true);
+#endif
 
 #if FTS_REPORT_PRESSURE_EN
             if (events[i].p <= 0) {
@@ -498,7 +519,12 @@ static int fts_input_report_b(struct fts_ts_data *data)
             }
         } else {
             uppoint++;
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+            input_mt_report_slot_state(data->input_dev, tool_type, false);
+            FTS_INFO("touch palm on %d",tool_type);
+#else
             input_mt_report_slot_state(data->input_dev, MT_TOOL_FINGER, false);
+#endif
             data->touchs &= ~BIT(events[i].id);
             if (data->log_level >= 1) {
                 FTS_DEBUG("[B]P%d UP!", events[i].id);
@@ -514,7 +540,11 @@ static int fts_input_report_b(struct fts_ts_data *data)
                 }
                 va_reported = true;
                 input_mt_slot(data->input_dev, i);
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+                input_mt_report_slot_state(data->input_dev, tool_type, false);
+#else
                 input_mt_report_slot_state(data->input_dev, MT_TOOL_FINGER, false);
+#endif
             }
         }
     }
@@ -526,6 +556,13 @@ static int fts_input_report_b(struct fts_ts_data *data)
             if (data->log_level >= 1) {
                 FTS_DEBUG("[B]Points All Up!");
             }
+
+#ifdef NDT_DATA_EN
+            if (use_ndt_aw8680x == 1) {
+                ndt_tp_transfer(0,0);
+            }
+#endif
+
             input_report_key(data->input_dev, BTN_TOUCH, 0);
         } else {
             input_report_key(data->input_dev, BTN_TOUCH, 1);
@@ -657,14 +694,46 @@ static int fts_read_parse_touchdata(struct fts_ts_data *data)
     struct ts_event *events = data->events;
     int max_touch_num = data->pdata->max_touch_number;
     u8 *buf = data->point_buf;
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+    u8 val;
+#endif
 #ifdef FOCALTECH_PALM_SENSOR_EN
     int pd_state = 0;
 #endif
-
+#ifdef NDT_DATA_EN
+    unsigned int pressure_ndt = 0;
+    unsigned int random_ndt = 0;
+    unsigned int random_number = 0;
+#endif
+#ifdef PICOLEAF_DATA_EN
+    int press = 0;
+#ifdef NDT_DATA_EN
+    if (use_ndt_aw8680x == 2) {
+#endif
+        int press_notify = cypsoc_picoleaf_notification_enabled();
+            FTS_DEBUG("focal from pico press_notify data%d!", press_notify);
+        if (press_notify) {
+            cypsoc_picoleaf_get_press_z(&press);
+            FTS_DEBUG("focal from pico press data%d!", press);
+        }
+#ifdef NDT_DATA_EN
+    }
+#endif
+#endif
     ret = fts_read_touchdata(data);
     if (ret) {
         return ret;
     }
+
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+    ret = fts_read_reg(01,&val);
+
+    if (val == 1) {
+        fts_data->palm_on = true;
+    } else if (val == 0){
+        fts_data->palm_on = false;
+    }
+#endif
 
 #ifdef FOCALTECH_PALM_SENSOR_EN
     if (data->palm_detection_enabled) {
@@ -731,7 +800,61 @@ static int fts_read_parse_touchdata(struct fts_ts_data *data)
         events[i].flag = buf[FTS_TOUCH_EVENT_POS + base] >> 6;
         events[i].id = buf[FTS_TOUCH_ID_POS + base] >> 4;
         events[i].area = buf[FTS_TOUCH_AREA_POS + base] >> 4;
+
+#ifdef CONFIG_ENABLE_RESOLITION_BOOST
+        events[i].x = ((buf[FTS_TOUCH_OFF_E_XH + base] & 0x0F) << 11) \
+                        +((buf[FTS_TOUCH_OFF_XL + base] & 0xFF) << 3)\
+                        +((buf[FTS_TOUCH_OFF_PRE + base] & 0xC0) >> 5)\
+                        +((buf[FTS_TOUCH_OFF_E_XH + base]& 0x20) >>  5);
+
+        events[i].y = ((buf[FTS_TOUCH_OFF_ID_YH + base] & 0x0F) << 12) \
+                        +((buf[FTS_TOUCH_OFF_YL + base] & 0xFF) << 4)\
+                        +((buf[FTS_TOUCH_OFF_PRE + base] & 0x30) >>  2)\
+                        +((buf[FTS_TOUCH_OFF_E_XH + base] & 0x10) >> 3)\
+                        +((buf[FTS_TOUCH_OFF_AREA + base] & 0x80) >> 7);
+        events[i].x = (events[i].x * FTS_TOUCH_HIRES_X ) / FTS_HI_RES_X_MAX;
+        events[i].y = (events[i].y * FTS_TOUCH_HIRES_X ) / FTS_HI_RES_X_MAX;
+        events[i].area = (buf[FTS_TOUCH_AREA_POS + base] & 0x7F) << 1;
+        events[i].p = (buf[FTS_TOUCH_PRE_POS + base] & 0x0F) << 4;
+#endif
+
+#ifdef PICOLEAF_DATA_EN
+#ifdef NDT_DATA_EN
+        if (use_ndt_aw8680x == 2) {
+#endif
+            if(press == 0){
+                FTS_DEBUG("RKRK 0ff events[0].p = (%d)", events[0].p);
+            } else {
+                FTS_DEBUG("RKRK on events[0].p = (%d)", events[0].p);
+                events[i].p = press;//buf[FTS_TOUCH_PRE_POS + base];
+            }
+#ifdef NDT_DATA_EN
+        }
+#endif
+#else
         events[i].p =  buf[FTS_TOUCH_PRE_POS + base];
+#endif
+
+#ifdef NDT_DATA_EN
+    if (use_ndt_aw8680x == 1) {
+        pressure_ndt = ndt_tp_transfer(events[i].x/4, events[i].y/4);
+
+        random_ndt = get_random_u32();
+        random_number = random_ndt % 1000;
+        if (pressure_ndt == 0) {
+            pressure_ndt = pressure_ndt + random_number;
+        } else if (pressure_ndt == 1) {
+            pressure_ndt = pressure_ndt + (random_number + 1000);
+        }
+
+        events[i].p = pressure_ndt;
+
+        FTS_DEBUG("finger num : %d,x = (%d),y = (%d), pressure_ndt = 0x%x, random_number = 0x%x, use_ndt_aw8680x =%d",
+                i, events[i].x/4, events[i].y/4, events[i].p, random_number, use_ndt_aw8680x);
+    }
+#else
+        events[i].p =  buf[FTS_TOUCH_PRE_POS + base];
+#endif
 
         if (EVENT_DOWN(events[i].flag) && (data->point_num == 0)) {
             FTS_INFO("abnormal touch data from fw");
@@ -910,7 +1033,16 @@ static int fts_input_init(struct fts_ts_data *ts_data)
     input_set_abs_params(input_dev, ABS_MT_POSITION_Y, pdata->y_min, pdata->y_max, 0, 0);
     input_set_abs_params(input_dev, ABS_MT_TOUCH_MAJOR, 0, 0xFF, 0, 0);
 #if FTS_REPORT_PRESSURE_EN
+#ifdef PICOLEAF_DATA_EN
+    input_set_abs_params(input_dev, ABS_MT_PRESSURE, 0, 0xFFFF, 0, 0);
+#else
     input_set_abs_params(input_dev, ABS_MT_PRESSURE, 0, 0xFF, 0, 0);
+#endif
+#endif
+
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+    input_set_abs_params(input_dev, ABS_MT_TOOL_TYPE,
+            MT_TOOL_FINGER, MT_TOOL_PALM, 0, 0);
 #endif
 
     ret = input_register_device(input_dev);
@@ -1191,7 +1323,11 @@ int fts_power_source_ctrl(struct fts_ts_data *ts_data, int enable)
     } else {
         if (!ts_data->power_disabled) {
             FTS_DEBUG("regulator disable !");
-            gpio_direction_output(ts_data->pdata->reset_gpio, 0);
+            if (ts_data->pdata->reset_high){
+                gpio_direction_output(ts_data->pdata->reset_gpio, 1);
+            } else {
+                gpio_direction_output(ts_data->pdata->reset_gpio, 0);
+            }
             msleep(1);
             ret = regulator_disable(ts_data->vdd);
             if (ret) {
@@ -1372,6 +1508,32 @@ static int fts_gpio_configure(struct fts_ts_data *data)
 #endif
     }
 
+   /* request vci gpio */
+    if (gpio_is_valid(data->pdata->vci_gpio)) {
+        ret = gpio_request(data->pdata->vci_gpio, "fts_vci_gpio");
+        if (ret) {
+            FTS_ERROR("[GPIO]vci gpio request failed");
+        }
+
+        ret = gpio_direction_output(data->pdata->vci_gpio, 1);
+        if (ret) {
+            FTS_ERROR("[GPIO]set_direction for vci gpio failed");
+        }
+    }
+
+      /* request vio gpio */
+    if (gpio_is_valid(data->pdata->vio_gpio)) {
+        ret = gpio_request(data->pdata->vio_gpio, "fts_vio_gpio");
+        if (ret) {
+            FTS_ERROR("[GPIO]vio gpio request failed");
+        }
+
+        ret = gpio_direction_output(data->pdata->vio_gpio, 1);
+        if (ret) {
+            FTS_ERROR("[GPIO]set_direction for vio gpio failed");
+        }
+    }
+
     FTS_FUNC_EXIT();
     return 0;
 
@@ -1476,6 +1638,8 @@ static int fts_parse_dt(struct device *dev, struct fts_ts_platform_data *pdata)
                  pdata->key_x_coords[2], pdata->key_y_coords[2]);
     }
 
+    pdata->reset_high = of_property_read_bool(np, "focaltech,reset-high");
+
     /* reset, irq gpio info */
     pdata->reset_gpio = of_get_named_gpio_flags(np, "focaltech,reset-gpio",
                         0, &pdata->reset_gpio_flags);
@@ -1502,6 +1666,19 @@ static int fts_parse_dt(struct device *dev, struct fts_ts_platform_data *pdata)
 
     FTS_INFO("max touch number:%d, irq gpio:%d, reset gpio:%d",
              pdata->max_touch_number, pdata->irq_gpio, pdata->reset_gpio);
+
+    pdata->vci_gpio = of_get_named_gpio_flags(np, "focaltech,vci",
+                        0, &pdata->vci_gpio_flags);
+    if (pdata->reset_gpio < 0)
+        FTS_ERROR("Unable to get vci_gpio");
+
+    pdata->vio_gpio = of_get_named_gpio_flags(np, "focaltech,vio",
+                      0, &pdata->vio_gpio_flags);
+    if (pdata->irq_gpio < 0)
+        FTS_ERROR("Unable to get vio_gpio");
+
+    FTS_INFO("max touch number:%d, vci gpio:%d, vio gpio:%d",
+             pdata->max_touch_number, pdata->vci_gpio, pdata->vio_gpio);
 
     FTS_FUNC_EXIT();
     return 0;
@@ -2230,6 +2407,9 @@ static void __exit fts_ts_exit(void)
 module_init(fts_ts_init);
 module_exit(fts_ts_exit);
 
+#if KERNEL_VERSION(5, 4, 0) <= LINUX_VERSION_CODE
+MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
+#endif
 MODULE_AUTHOR("FocalTech Driver Team");
 MODULE_DESCRIPTION("FocalTech Touchscreen Driver");
 MODULE_LICENSE("GPL v2");

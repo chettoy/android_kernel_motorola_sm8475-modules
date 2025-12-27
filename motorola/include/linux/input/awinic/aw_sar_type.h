@@ -121,6 +121,8 @@ struct aw_sar_dts_info {
 	bool use_pm;
 	bool update_fw_flag;
 	bool use_plug_cail_flag;
+	bool new_fw_format_flag;
+	const char *plat_state[1];
 	/*wxm modify start by 2023/12/5*/
 	uint32_t monitor_esd_flag;
 	/*wxm modify end by 2023/12/5*/
@@ -320,6 +322,11 @@ struct aw_sar {
 	struct aw_sar_pinctrl pinctrl;
 	struct work_struct ps_notify_work;
 	struct notifier_block ps_notif;
+#ifdef CONFIG_CAPSENSE_HALL_CAL
+        struct delayed_work hall_notify_work;
+        struct notifier_block hall_notif;
+        int hall_is_present;
+#endif
 	/*wxm add start by 2023/12/5*/
 	struct delayed_work monitor_work;
 	struct workqueue_struct *monitor_wq;

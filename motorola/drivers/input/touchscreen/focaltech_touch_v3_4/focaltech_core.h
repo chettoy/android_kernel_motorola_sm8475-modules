@@ -72,6 +72,9 @@
 #ifdef CONFIG_FTS_LAST_TIME
 #include <linux/ktime.h>
 #endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 30)
+#include <linux/pinctrl/consumer.h>
+#endif
 
 /*****************************************************************************
 * Private constant and macro definitions using #define
@@ -81,7 +84,12 @@
 #define FTS_KEY_DIM                         10
 #define FTS_COORDS_ARR_SIZE                 4
 #define FTS_ONE_TCH_LEN                     6
+#define FTS_ONE_TCH_LEN_V2                  8
+#if FTS_INPUT_PROTOCOL_V2
+#define FTS_TOUCH_DATA_LEN  (FTS_MAX_POINTS_SUPPORT * FTS_ONE_TCH_LEN_V2 + 4)
+#else
 #define FTS_TOUCH_DATA_LEN  (FTS_MAX_POINTS_SUPPORT * FTS_ONE_TCH_LEN + 2)
+#endif
 
 #define FTS_GESTURE_POINTS_MAX              6
 #define FTS_GESTURE_DATA_LEN               (FTS_GESTURE_POINTS_MAX * 4 + 4)
@@ -96,6 +104,8 @@
 #define FTS_TOUCH_OFF_YL                    3
 #define FTS_TOUCH_OFF_PRE                   4
 #define FTS_TOUCH_OFF_AREA                  5
+#define FTS_TOUCH_OFF_MINOR                 6
+
 #define FTS_TOUCH_E_NUM                     1
 #define FTS_X_MIN_DISPLAY_DEFAULT           0
 #define FTS_Y_MIN_DISPLAY_DEFAULT           0
@@ -129,6 +139,18 @@
  */
 #define FTS_PATCH_COMERR_PM                 1
 #define FTS_TIMEOUT_COMERR_PM               700
+
+#define FTS_HI_RES_X_MAX                    16
+#ifdef CONFIG_FTS_HIRES_EN
+#define FTS_TOUCH_HIRES_EN                  1
+#ifdef CONFIG_FTS_HIRES_X
+#define FTS_TOUCH_HIRES_X                   ((CONFIG_FTS_HIRES_X < FTS_HI_RES_X_MAX) ? CONFIG_FTS_HIRES_X : FTS_HI_RES_X_MAX)
+#else
+#define FTS_TOUCH_HIRES_X                   10
+#endif
+#else
+#define FTS_TOUCH_HIRES_EN                  0
+#endif
 
 /*****************************************************************************
 * Private enumerations, structures and unions using typedef
@@ -174,6 +196,7 @@ struct ts_event {
     int flag;   /* touch event flag: 0 -- down; 1-- up; 2 -- contact */
     int id;     /*touch ID */
     int area;
+    int minor;
 };
 
 
@@ -249,6 +272,9 @@ struct fts_ts_data {
     bool prc_support;
     bool prc_mode;
     bool esd_support;
+    bool fwdbg_support;
+    int fwdbg_value;
+    struct delayed_work fwdbg_work;
 
     bool gesture_support;   /* gesture enable or disable, default: disable */
     u8 gesture_bmode;       /*gesture buffer mode*/
@@ -299,6 +325,9 @@ struct fts_ts_data {
 #endif
     u8 gsx_cmd;
 
+#ifdef CONFIG_ENABLE_FTS_PALM_CANCEL
+    bool palm_on;
+#endif
 #ifdef FOCALTECH_PALM_SENSOR_EN
     bool palm_detection_enabled;
     enum palm_sensor_lazy_set palm_detection_lazy_set;
@@ -325,6 +354,9 @@ struct fts_ts_data {
 #ifdef CONFIG_FTS_LAST_TIME
     ktime_t last_event_time;
 #endif
+#ifdef CONFIG_FTS_HARDWARE_STATUS
+	u8 open_status;
+#endif
 
 };
 
@@ -337,9 +369,10 @@ enum _FTS_BUS_TYPE {
 
 enum _FTS_TOUCH_ETYPE {
     TOUCH_DEFAULT = 0x00,
-    TOUCH_EVENT_NUM = 0x02,
+    TOUCH_PROTOCOL_v2 = 0x02,
     TOUCH_EXTRA_MSG = 0x08,
     TOUCH_PEN = 0x0B,
+    TOUCH_FWDBG = 0x0E,
     TOUCH_GESTURE = 0x80,
     TOUCH_FW_INIT = 0x81,
     TOUCH_IGNORE = 0xFE,
@@ -431,6 +464,10 @@ int fts_ex_mode_recovery(struct fts_ts_data *ts_data);
 void fts_irq_disable(void);
 void fts_irq_enable(void);
 int fts_power_source_ctrl(struct fts_ts_data *ts_data, int enable);
+int fts_fwdbg_init(struct fts_ts_data *ts_data);
+int fts_fwdbg_exit(struct fts_ts_data *ts_data);
+int fts_fwdbg_readdata(struct fts_ts_data *ts_data, u8 *buf);
+void fts_fwdbg_handle_reset(struct fts_ts_data *ts_data);
 #ifdef FOCALTECH_SENSOR_EN
 bool fts_is_fod_resume(struct fts_ts_data *ts_data);
 #endif
