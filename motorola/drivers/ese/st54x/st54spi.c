@@ -55,6 +55,9 @@
 
 #include <linux/version.h>
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0))
+#include "linux/spi/spi-msm-geni.h"
+#endif
 
 /*
  * This supports access to SPI devices using normal userspace I/O calls.
@@ -1235,14 +1238,16 @@ static int st54spi_probe(struct spi_device *spi)
 	struct st54spi_data *st54spi;
 	int status, ret;
 	unsigned long minor;
-
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0))
+	struct spi_geni_qcom_ctrl_data *spi_param = NULL;
+#endif
 
 	if (spi->dev.of_node && !mmi_device_is_available(spi->dev.of_node)) {
-                pr_err("%s : mmi: device not supported\n", __func__);
-                return -ENODEV;
-        } else {
-                pr_err("%s : supported device found\n", __func__);
-        }
+        pr_err("%s : mmi: device not supported\n", __func__);
+        return -ENODEV;
+    } else {
+        pr_err("%s : supported device found\n", __func__);
+    }
 
 	/*
 	 * st54spi should never be referenced in DT without a specific
@@ -1298,8 +1303,25 @@ static int st54spi_probe(struct spi_device *spi)
 	// st54spi_chip_info.cs_holdtime = period;
 	// }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0))
 	st54spi->spi->cs_setup.unit = SPI_DELAY_UNIT_USECS;
 	st54spi->spi->cs_setup.value = 20;
+#else
+	// this method exists since kernel 5.3
+	// it uses u8 parameter in kernel 5.4 (clk count) and spi_delay parameter in kernel 5.5 (clk_count fobidden)
+	// target 10us delay ==> use CLK=4MHz and value 31 (even if u8 data, some platforms limit to 0-31)
+
+	// spi_set_cs_timing(spi, &st54spi_delay, NULL, NULL);
+
+	spi_param = devm_kzalloc(&spi->dev, sizeof(spi_param), GFP_KERNEL);
+	if (spi_param == NULL) {
+		status = -ENOMEM;
+	} else {
+		/* Initialize the driver data */
+		spi_param->spi_cs_clk_delay = 90;
+		spi->controller_data = spi_param;
+	}
+#endif
 
 	if (status == 0)
 		spi_set_drvdata(spi, st54spi);
@@ -1400,7 +1422,11 @@ static int st54spi_remove(struct spi_device *spi)
 
 	mutex_unlock(&device_list_lock);
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
 	return;
+#else
+	return 0;
+#endif
 }
 
 static struct spi_driver st54spi_spi_driver = {

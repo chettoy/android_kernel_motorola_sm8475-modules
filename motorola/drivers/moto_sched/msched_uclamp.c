@@ -13,7 +13,7 @@
 #include <trace/hooks/sched.h>
 #include <trace/hooks/binder.h>
 #include <kernel/sched/sched.h>
-#include <kernel/sched/autogroup.h>
+//#include <kernel/sched/autogroup.h>
 #include <drivers/android/binder_internal.h>
 
 #include "msched_uclamp.h"
